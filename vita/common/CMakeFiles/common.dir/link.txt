@@ -1,0 +1,2 @@
+/usr/bin/ar qc /home/robin/git/snapcast-vita/bin/libcommon.a CMakeFiles/common.dir/resampler.cpp.o CMakeFiles/common.dir/sample_format.cpp.o CMakeFiles/common.dir/base64.cpp.o CMakeFiles/common.dir/stream_uri.cpp.o CMakeFiles/common.dir/utils/string_utils.cpp.o CMakeFiles/common.dir/utils/file_utils.cpp.o CMakeFiles/common.dir/daemon.cpp.o
+/usr/bin/ranlib /home/robin/git/snapcast-vita/bin/libcommon.a

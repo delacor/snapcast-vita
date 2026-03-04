@@ -716,9 +716,33 @@ static SnapClient *find_client_by_index(AppState *state, int idx) {
     return NULL;
 }
 
+/* --- Accelerating button-repeat helper ---
+ * Call with a per-direction counter that the caller increments each frame the
+ * button is held and resets to 0 on release.  Returns non-zero when an action
+ * should fire this frame:
+ *   frame 0          → fires immediately (first press)
+ *   frames 1-19      → silent initial delay (~0.3 s @ 60 fps)
+ *   frames 20-139    → slow repeat every 10 frames  (~6 /s)
+ *   frames 140-259   → medium repeat every 4 frames (~15 /s)
+ *   frames 260+      → fast repeat every 2 frames   (~30 /s)
+ */
+static int btn_held_should_fire(int held_frames) {
+    if (held_frames == 0) return 1;
+    if (held_frames < 20) return 0;
+    int t = held_frames - 20;
+    if (t < 120) return (t % 10) == 0;
+    if (t < 240) return (t % 4)  == 0;
+    return (t % 2) == 0;
+}
+
 /* --- Input handling --- */
 
 void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
+    /* Per-direction hold counters for accelerating repeat */
+    static int player_held_l = 0, player_held_r = 0;
+    static int devices_held_l = 0, devices_held_r = 0;
+    static int settings_held_l = 0, settings_held_r = 0;
+
     pad_old = pad;
     sceCtrlPeekBufferPositive(0, &pad, 1);
     sceTouchPeek(SCE_TOUCH_PORT_FRONT, &touch, 1);
@@ -782,25 +806,28 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
         }
 
         if (pad.buttons & SCE_CTRL_LEFT) {
-            if (stream && stream->properties.can_go_previous && BTN_PRESSED(SCE_CTRL_LEFT)) {
-                /* Only skip previous on first press; subsequent presses = volume down */
-            }
-            if (state->volume_percent > 0) {
+            if (btn_held_should_fire(player_held_l) && state->volume_percent > 0) {
                 state->volume_percent--;
                 if (state->our_client_id[0])
                     net_rpc_set_volume(net, state->our_client_id,
                                        state->volume_percent, state->volume_muted);
                 audio_set_volume(audio, state->volume_percent, state->volume_muted);
             }
+            player_held_l++;
+        } else {
+            player_held_l = 0;
         }
         if (pad.buttons & SCE_CTRL_RIGHT) {
-            if (state->volume_percent < 100) {
+            if (btn_held_should_fire(player_held_r) && state->volume_percent < 100) {
                 state->volume_percent++;
                 if (state->our_client_id[0])
                     net_rpc_set_volume(net, state->our_client_id,
                                        state->volume_percent, state->volume_muted);
                 audio_set_volume(audio, state->volume_percent, state->volume_muted);
             }
+            player_held_r++;
+        } else {
+            player_held_r = 0;
         }
 
         if (BTN_PRESSED(SCE_CTRL_UP) && stream && stream->properties.can_go_previous)
@@ -826,7 +853,7 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
                 }
             }
             if (pad.buttons & SCE_CTRL_LEFT) {
-                if (cli->volume.percent > 0) {
+                if (btn_held_should_fire(devices_held_l) && cli->volume.percent > 0) {
                     cli->volume.percent--;
                     net_rpc_set_volume(net, cli->id, cli->volume.percent, cli->volume.muted);
                     if (strcmp(cli->id, state->our_client_id) == 0) {
@@ -834,9 +861,12 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
                         audio_set_volume(audio, state->volume_percent, state->volume_muted);
                     }
                 }
+                devices_held_l++;
+            } else {
+                devices_held_l = 0;
             }
             if (pad.buttons & SCE_CTRL_RIGHT) {
-                if (cli->volume.percent < 100) {
+                if (btn_held_should_fire(devices_held_r) && cli->volume.percent < 100) {
                     cli->volume.percent++;
                     net_rpc_set_volume(net, cli->id, cli->volume.percent, cli->volume.muted);
                     if (strcmp(cli->id, state->our_client_id) == 0) {
@@ -844,6 +874,9 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
                         audio_set_volume(audio, state->volume_percent, state->volume_muted);
                     }
                 }
+                devices_held_r++;
+            } else {
+                devices_held_r = 0;
             }
         }
         break;
@@ -887,14 +920,24 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
 
         if (state->selected_item == 1) {
             if (pad.buttons & SCE_CTRL_LEFT) {
-                state->config.latency_ms--;
-                if (state->conn_state == CONN_CONNECTED && state->our_client_id[0])
-                    net_rpc_set_latency(net, state->our_client_id, state->config.latency_ms);
+                if (btn_held_should_fire(settings_held_l)) {
+                    state->config.latency_ms--;
+                    if (state->conn_state == CONN_CONNECTED && state->our_client_id[0])
+                        net_rpc_set_latency(net, state->our_client_id, state->config.latency_ms);
+                }
+                settings_held_l++;
+            } else {
+                settings_held_l = 0;
             }
             if (pad.buttons & SCE_CTRL_RIGHT) {
-                state->config.latency_ms++;
-                if (state->conn_state == CONN_CONNECTED && state->our_client_id[0])
-                    net_rpc_set_latency(net, state->our_client_id, state->config.latency_ms);
+                if (btn_held_should_fire(settings_held_r)) {
+                    state->config.latency_ms++;
+                    if (state->conn_state == CONN_CONNECTED && state->our_client_id[0])
+                        net_rpc_set_latency(net, state->our_client_id, state->config.latency_ms);
+                }
+                settings_held_r++;
+            } else {
+                settings_held_r = 0;
             }
         }
         break;

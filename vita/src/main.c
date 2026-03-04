@@ -360,9 +360,12 @@ static void process_rpc_message(const char *json_str) {
         }
         else if (strcmp(method, "Stream.OnProperties") == 0 && params) {
             const char *id = json_get_string(params, "id", "");
-            for (int s = 0; s < g_state.server.stream_count; s++) {
-                if (strcmp(g_state.server.streams[s].id, id) == 0)
-                    net_parse_stream_properties(params, &g_state.server.streams[s]);
+            JsonNode *props = json_get(params, "properties");
+            if (props) {
+                for (int s = 0; s < g_state.server.stream_count; s++) {
+                    if (strcmp(g_state.server.streams[s].id, id) == 0)
+                        net_parse_stream_properties(props, &g_state.server.streams[s]);
+                }
             }
         }
         else if (strcmp(method, "Stream.OnUpdate") == 0 && params) {
@@ -461,11 +464,21 @@ int main(void) {
     g_state.running = 1;
     g_state.volume_percent = 100;
 
-    config_load(&g_state.config);
+    int config_existed = config_load(&g_state.config);
 
     if (net_init() < 0) {
         strncpy(g_state.conn_error, "Network init failed", MAX_STR_LEN - 1);
         g_state.conn_state = CONN_ERROR;
+    } else if (config_existed < 0) {
+        SceNetCtlInfo info;
+        if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) >= 0) {
+            char *last_dot = strrchr(info.ip_address, '.');
+            if (last_dot) {
+                int prefix_len = (int)(last_dot - info.ip_address);
+                snprintf(g_state.config.server_ip, MAX_IP_LEN,
+                         "%.*s.100", prefix_len, info.ip_address);
+            }
+        }
     }
 
     if (audio_init(&g_audio) < 0) {
