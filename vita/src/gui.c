@@ -215,7 +215,22 @@ static void draw_connect_screen(AppState *state) {
         snprintf(srv_info, sizeof(srv_info), "Server: %s v%s",
                  state->server.host_name, state->server.version);
         draw_text(cx - text_width(0.75f, srv_info) / 2, y, COL_DIM, 0.75f, srv_info);
+
+        y += 22;
+        if (state->codec[0]) {
+            char fmt_info[128];
+            snprintf(fmt_info, sizeof(fmt_info), "Audio: %s  %dHz / %dbit / %dch",
+                     state->codec, state->sample_rate, state->bits, state->channels);
+            draw_text(cx - text_width(0.75f, fmt_info) / 2, y,
+                      COL_PRIMARY, 0.75f, fmt_info);
+        }
     }
+
+    /* Debug hints */
+    draw_text(cx - 160, SCREEN_H - BOTTOM_BAR_H - 32, COL_DIM, 0.60f,
+              "Debug log: ux0:data/snapcast/debug.log");
+    draw_text(cx - 160, SCREEN_H - BOTTOM_BAR_H - 16, COL_DIM, 0.60f,
+              "PCM dump:  ux0:data/snapcast/audio_dump.raw  (5s, sox -r 48000 -e signed-integer -b 16 -c 2 -L)");
 }
 
 /* --- Player screen --- */
@@ -235,7 +250,7 @@ static SnapStream *find_our_stream(AppState *state) {
     return (state->server.stream_count > 0) ? &state->server.streams[0] : NULL;
 }
 
-static void draw_player_screen(AppState *state) {
+static void draw_player_screen(AppState *state, AudioContext *audio) {
     if (state->conn_state != CONN_CONNECTED) {
         draw_text(SCREEN_W / 2 - 80, SCREEN_H / 2, COL_GRAY, 1.0f, "Not connected");
         return;
@@ -344,13 +359,34 @@ static void draw_player_screen(AppState *state) {
         draw_text(SCREEN_W - 80, y + 6, COL_GRAY, 0.75f, dur_str);
     }
 
-    /* Audio info footer */
-    y = SCREEN_H - BOTTOM_BAR_H - 40;
+    /* Audio info footer + buffer fill bar */
+    y = SCREEN_H - BOTTOM_BAR_H - 52;
     if (state->codec[0]) {
         char audio_info[128];
-        snprintf(audio_info, sizeof(audio_info), "Codec: %s  %dHz/%dbit/%dch  Buffer: %dms",
-                 state->codec, state->sample_rate, state->bits, state->channels, state->buffer_ms);
+        snprintf(audio_info, sizeof(audio_info),
+                 "Codec: %s  %dHz/%dbit/%dch  srv-buf: %dms",
+                 state->codec, state->sample_rate, state->bits,
+                 state->channels, state->buffer_ms);
         draw_text(40, y, COL_DIM, 0.7f, audio_info);
+    }
+    y += 20;
+    /* Ring buffer fill bar */
+    if (audio) {
+        float fill = audio_fill_ratio(audio);
+        int bar_x = 40, bar_w = 500, bar_h = 8;
+        draw_slider(bar_x, y, bar_w, bar_h, fill, COL_PRIMARY, COL_SLIDER_BG);
+
+        char fill_str[64];
+        int fill_kb = (int)(fill * AUDIO_RING_SIZE / 1024);
+        snprintf(fill_str, sizeof(fill_str), "ring: %dKB/%dKB  U:%d O:%d",
+                 fill_kb, AUDIO_RING_SIZE / 1024,
+                 audio->stat_underruns, audio->stat_overflows);
+        draw_text(bar_x + bar_w + 12, y + 6, COL_DIM, 0.65f, fill_str);
+
+        /* Color the bar red if critically low (likely about to underrun) */
+        if (fill < 0.1f && audio->prerolled) {
+            draw_slider(bar_x, y, (int)(bar_w * fill), bar_h, 1.0f, COL_RED, COL_SLIDER_BG);
+        }
     }
 }
 
@@ -487,7 +523,7 @@ static void draw_groups_screen(AppState *state) {
 
 /* --- Settings screen --- */
 
-static void draw_settings_screen(AppState *state) {
+static void draw_settings_screen(AppState *state, AudioContext *audio) {
     int y = CONTENT_Y + 20;
     int lx = 60;
 
@@ -525,7 +561,7 @@ static void draw_settings_screen(AppState *state) {
         draw_text(lx + 170, y + 14, COL_WHITE, 0.85f, state->codec);
         y += 30;
 
-        draw_text(lx, y + 14, COL_GRAY, 0.85f, "Buffer:");
+        draw_text(lx, y + 14, COL_GRAY, 0.85f, "Srv buf:");
         char buf_str[32];
         snprintf(buf_str, sizeof(buf_str), "%d ms", state->buffer_ms);
         draw_text(lx + 170, y + 14, COL_WHITE, 0.85f, buf_str);
@@ -537,6 +573,24 @@ static void draw_settings_screen(AppState *state) {
                  state->server.host_name, state->server.version);
         draw_text(lx + 170, y + 14, COL_WHITE, 0.85f, srv_str);
         y += 30;
+
+        if (audio) {
+            draw_text(lx, y + 14, COL_GRAY, 0.85f, "Ring buf:");
+            float fill = audio_fill_ratio(audio);
+            int bar_w = 200;
+            draw_slider(lx + 170, y + 8, bar_w, 10, fill, COL_SLIDER_FG, COL_SLIDER_BG);
+            char rbuf[64];
+            snprintf(rbuf, sizeof(rbuf), " %.0f%%  U:%d  O:%d",
+                     fill * 100.f, audio->stat_underruns, audio->stat_overflows);
+            draw_text(lx + 170 + bar_w, y + 14, COL_DIM, 0.75f, rbuf);
+            y += 30;
+
+            draw_text(lx, y + 14, COL_GRAY, 0.85f, "Prerolled:");
+            draw_text(lx + 170, y + 14,
+                      audio->prerolled ? COL_GREEN : COL_ORANGE, 0.85f,
+                      audio->prerolled ? "yes" : "buffering...");
+            y += 30;
+        }
     }
 
     y += 20;
@@ -545,7 +599,7 @@ static void draw_settings_screen(AppState *state) {
 
 /* --- Main draw function --- */
 
-void gui_draw(AppState *state) {
+void gui_draw(AppState *state, AudioContext *audio) {
     vita2d_start_drawing();
     vita2d_clear_screen();
 
@@ -553,10 +607,10 @@ void gui_draw(AppState *state) {
 
     switch (state->current_screen) {
         case SCREEN_CONNECT:  draw_connect_screen(state); break;
-        case SCREEN_PLAYER:   draw_player_screen(state); break;
+        case SCREEN_PLAYER:   draw_player_screen(state, audio); break;
         case SCREEN_DEVICES:  draw_devices_screen(state); break;
         case SCREEN_GROUPS:   draw_groups_screen(state); break;
-        case SCREEN_SETTINGS: draw_settings_screen(state); break;
+        case SCREEN_SETTINGS: draw_settings_screen(state, audio); break;
         default: break;
     }
 

@@ -14,7 +14,7 @@
 
 int  gui_init(void);
 void gui_fini(void);
-void gui_draw(AppState *state);
+void gui_draw(AppState *state, AudioContext *audio);
 void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio);
 int  gui_ime_active(void);
 int  gui_ime_update(AppState *state, NetContext *net);

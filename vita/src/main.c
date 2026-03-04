@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "gui.h"
 
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -15,6 +16,20 @@
 #include <psp2/net/netctl.h>
 #include <psp2/rtc.h>
 #include <psp2/ctrl.h>
+#include <psp2/io/fcntl.h>
+
+static void main_log(const char *fmt, ...) {
+    SceUID fd = sceIoOpen("ux0:data/snapcast/debug.log",
+                          SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
+    if (fd < 0) return;
+    char buf[512];
+    va_list ap;
+    va_start(ap, fmt);
+    int len = vsnprintf(buf, sizeof(buf), fmt, ap);
+    va_end(ap);
+    sceIoWrite(fd, buf, len);
+    sceIoClose(fd);
+}
 
 static AppState g_state;
 static NetContext g_net;
@@ -39,9 +54,12 @@ static void parse_server_settings(const char *payload, uint32_t size, AppState *
     free(json_str);
     if (!root) return;
 
-    state->buffer_ms = json_get_int(root, "bufferMs", 1000);
-    state->volume_percent = json_get_int(root, "volume", 100);
-    state->volume_muted = json_get_bool(root, "muted", 0);
+    state->buffer_ms      = json_get_int(root, "bufferMs", 1000);
+    state->volume_percent = json_get_int(root, "volume",    100);
+    state->volume_muted   = json_get_bool(root, "muted",     0);
+
+    main_log("[main] server_settings: bufferMs=%d vol=%d muted=%d\n",
+             state->buffer_ms, state->volume_percent, state->volume_muted);
 
     audio_set_volume(&g_audio, state->volume_percent, state->volume_muted);
     json_free(root);
@@ -95,17 +113,75 @@ static void parse_codec_header(const char *payload, uint32_t size, AppState *sta
     }
 }
 
+/* -----------------------------------------------------------------------
+ * PCM dump – saves the first DUMP_BYTES bytes of received audio to a file.
+ * Transfer ux0:data/snapcast/audio_dump.raw to PC and play with:
+ *   sox -r 48000 -e signed-integer -b 16 -c 2 -L audio_dump.raw dump.wav
+ * If it sounds clean there, the distortion is in the Vita audio output path.
+ * If it also sounds distorted, the issue is in data reception.
+ * Set AUDIO_DUMP_ENABLED to 0 to disable.
+ * ----------------------------------------------------------------------- */
+#define AUDIO_DUMP_ENABLED  1
+#define DUMP_BYTES          (192000 * 5)   /* 5 seconds @ 48 kHz stereo 16 bit */
+#define DUMP_FILE           "ux0:data/snapcast/audio_dump.raw"
+
+static SceUID g_dump_fd    = -1;
+static int    g_dump_bytes = 0;
+static int    g_dump_done  = 0;
+
+static void pcm_dump_init(void) {
+    g_dump_done = 0;
+    g_dump_bytes = 0;
+    if (g_dump_fd >= 0) { sceIoClose(g_dump_fd); g_dump_fd = -1; }
+#if AUDIO_DUMP_ENABLED
+    sceIoRemove(DUMP_FILE);
+    g_dump_fd = sceIoOpen(DUMP_FILE,
+                          SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0666);
+    main_log("[dump] opened %s  fd=%d\n", DUMP_FILE, g_dump_fd);
+#endif
+}
+
+static void pcm_dump_write(const void *data, int size) {
+#if AUDIO_DUMP_ENABLED
+    if (g_dump_done || g_dump_fd < 0) return;
+    int to_write = size;
+    if (g_dump_bytes + to_write > DUMP_BYTES)
+        to_write = DUMP_BYTES - g_dump_bytes;
+    if (to_write > 0) {
+        sceIoWrite(g_dump_fd, data, to_write);
+        g_dump_bytes += to_write;
+    }
+    if (g_dump_bytes >= DUMP_BYTES) {
+        sceIoClose(g_dump_fd);
+        g_dump_fd   = -1;
+        g_dump_done = 1;
+        main_log("[dump] complete: %d bytes written to %s\n",
+                 g_dump_bytes, DUMP_FILE);
+    }
+#else
+    (void)data; (void)size;
+#endif
+}
+
 static void handle_wire_chunk(const char *payload, uint32_t size) {
     if (size < 12) return;
 
-    /* Skip timestamp (8 bytes), read payload size */
+    /* Wire chunk body: timestamp.sec(4) + timestamp.usec(4) + size(4) + data */
     uint32_t chunk_size;
     memcpy(&chunk_size, payload + 8, sizeof(uint32_t));
     if (chunk_size > size - 12) return;
 
     const char *pcm_data = payload + 12;
 
-    /* For PCM codec, data is raw samples; write directly to audio ring buffer */
+    /* Log first chunk size to verify expected value (3840 B @ 48kHz/20ms) */
+    static int first_chunk_logged = 0;
+    if (!first_chunk_logged) {
+        main_log("[main] first wire_chunk: chunk_size=%u (expected 3840 @ 48kHz/20ms)\n",
+                 chunk_size);
+        first_chunk_logged = 1;
+    }
+
+    pcm_dump_write(pcm_data, (int)chunk_size);
     audio_write(&g_audio, pcm_data, chunk_size);
 }
 
@@ -113,7 +189,11 @@ static int stream_thread_func(SceSize args, void *argp) {
     AppState *state = &g_state;
     NetContext *net = &g_net;
 
+    main_log("[main] connecting to %s:%d\n",
+             state->config.server_ip, state->config.stream_port);
+
     if (net_stream_connect(net, state->config.server_ip, state->config.stream_port) < 0) {
+        main_log("[main] stream connect failed\n");
         strncpy(state->conn_error, "Failed to connect (stream)", MAX_STR_LEN - 1);
         state->conn_state = CONN_ERROR;
         stream_thread_running = 0;
@@ -151,6 +231,16 @@ static int stream_thread_func(SceSize args, void *argp) {
             case MSG_CODEC_HEADER:
                 parse_codec_header(payload, hdr.size, state);
                 codec_received = 1;
+                main_log("[main] codec_header: codec='%s' rate=%d ch=%d bits=%d bufMs=%d\n",
+                         state->codec, state->sample_rate, state->channels,
+                         state->bits, state->buffer_ms);
+                pcm_dump_init();
+                audio_flush(&g_audio);
+                audio_configure(&g_audio,
+                    state->sample_rate  > 0 ? state->sample_rate  : 48000,
+                    state->channels     > 0 ? state->channels     : 2,
+                    state->bits         > 0 ? state->bits         : 16,
+                    50);
                 audio_start(&g_audio);
                 break;
 
@@ -331,6 +421,10 @@ static void do_connect(AppState *state, NetContext *net) {
     memset(&g_state.server, 0, sizeof(g_state.server));
     g_state.our_client_id[0] = '\0';
     g_state.codec[0] = '\0';
+    g_state.sample_rate = 0;
+    g_state.bits = 0;
+    g_state.channels = 0;
+    audio_flush(&g_audio);
 
     if (net_control_connect(net, state->config.server_ip, state->config.control_port) < 0) {
         strncpy(state->conn_error, "Failed to connect (control)", MAX_STR_LEN - 1);
@@ -429,7 +523,7 @@ int main(void) {
         }
 
         /* Render */
-        gui_draw(&g_state);
+        gui_draw(&g_state, &g_audio);
 
         /* Check for exit */
         SceCtrlData ctrl;
