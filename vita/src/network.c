@@ -432,6 +432,34 @@ static void parse_stream(JsonNode *sj, SnapStream *stream) {
     if (props) net_parse_stream_properties(props, stream);
 }
 
+/* Extract a string value that may be either a JSON string or an array of
+ * strings (Snapcast/MPRIS sends artist, albumArtist, genre as arrays). */
+static void json_extract_string_or_array(JsonNode *obj, const char *key,
+                                         char *dest, int max_len) {
+    JsonNode *n = json_get(obj, key);
+    if (!n) return;
+
+    if (n->type == JSON_STRING && n->str_val) {
+        strncpy(dest, n->str_val, max_len - 1);
+        dest[max_len - 1] = '\0';
+    } else if (n->type == JSON_ARRAY) {
+        int pos = 0;
+        for (JsonNode *e = n->child; e && pos < max_len - 1; e = e->next) {
+            if (e->type == JSON_STRING && e->str_val) {
+                if (pos > 0 && pos + 2 < max_len - 1) {
+                    dest[pos++] = ',';
+                    dest[pos++] = ' ';
+                }
+                int len = (int)strlen(e->str_val);
+                if (len > max_len - 1 - pos) len = max_len - 1 - pos;
+                memcpy(dest + pos, e->str_val, len);
+                pos += len;
+            }
+        }
+        dest[pos] = '\0';
+    }
+}
+
 void net_parse_stream_properties(JsonNode *props, SnapStream *stream) {
     if (!props) return;
 
@@ -446,14 +474,20 @@ void net_parse_stream_properties(JsonNode *props, SnapStream *stream) {
     strncpy(stream->properties.playback_status, ps,
             sizeof(stream->properties.playback_status) - 1);
 
+    /* Position lives at properties level (MPRIS property, not metadata) */
+    stream->properties.metadata.position = json_get_number(props, "position", 0.0);
+
     JsonNode *meta = json_get(props, "metadata");
     if (meta) {
         const char *t = json_get_string(meta, "title",
                         json_get_string(meta, "track", ""));
         strncpy(stream->properties.metadata.title, t, MAX_STR_LEN - 1);
 
-        const char *a = json_get_string(meta, "artist", "");
-        strncpy(stream->properties.metadata.artist, a, MAX_STR_LEN - 1);
+        json_extract_string_or_array(meta, "artist",
+                                     stream->properties.metadata.artist, MAX_STR_LEN);
+        if (!stream->properties.metadata.artist[0])
+            json_extract_string_or_array(meta, "albumArtist",
+                                         stream->properties.metadata.artist, MAX_STR_LEN);
 
         const char *al = json_get_string(meta, "album", "");
         strncpy(stream->properties.metadata.album, al, MAX_STR_LEN - 1);
@@ -462,7 +496,6 @@ void net_parse_stream_properties(JsonNode *props, SnapStream *stream) {
         strncpy(stream->properties.metadata.art_url, art, MAX_URL_LEN - 1);
 
         stream->properties.metadata.duration = json_get_number(meta, "duration", 0.0);
-        stream->properties.metadata.position = json_get_number(meta, "position", 0.0);
     }
 }
 
@@ -491,10 +524,11 @@ static void parse_group(JsonNode *gj, SnapGroup *group) {
 
 void net_parse_server_status(JsonNode *result, SnapServer *server) {
     if (!result) return;
-    memset(server, 0, sizeof(*server));
 
     JsonNode *srv = json_get(result, "server");
     if (!srv) return;
+
+    memset(server, 0, sizeof(*server));
 
     JsonNode *host_info = json_get(srv, "server");
     if (host_info) {
