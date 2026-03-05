@@ -128,6 +128,8 @@ static void draw_top_bar(AppState *state) {
 
     if (state->conn_state == CONN_CONNECTED) {
         draw_rect(SCREEN_W - 24, 16, 10, 10, COL_GREEN);
+    } else if (state->conn_state == CONN_RECONNECTING) {
+        draw_rect(SCREEN_W - 24, 16, 10, 10, COL_ORANGE);
     } else {
         draw_rect(SCREEN_W - 24, 16, 10, 10, COL_RED);
     }
@@ -183,30 +185,41 @@ static void draw_connect_screen(AppState *state) {
     const char *btn_label = "CONNECT";
     if (state->conn_state == CONN_CONNECTING) btn_label = "CONNECTING...";
     else if (state->conn_state == CONN_CONNECTED) btn_label = "DISCONNECT";
+    else if (state->conn_state == CONN_RECONNECTING) btn_label = "CANCEL";
 
     draw_button(cx - 100, y, 200, 40, btn_label, state->selected_item == 2);
     y += 60;
 
-    const char *status = "Disconnected";
+    char status_line[MAX_STR_LEN + 64];
     unsigned int status_col = COL_GRAY;
+
     switch (state->conn_state) {
         case CONN_CONNECTED:
-            status = "Connected";
+            snprintf(status_line, sizeof(status_line), "Status: Connected");
             status_col = COL_GREEN;
             break;
         case CONN_CONNECTING:
-            status = "Connecting...";
+            snprintf(status_line, sizeof(status_line), "Status: Connecting...");
             status_col = COL_ORANGE;
             break;
+        case CONN_RECONNECTING: {
+            int rem = state->reconnect_delay_frames - state->reconnect_timer;
+            int rem_secs = (rem + 59) / 60;
+            if (rem_secs < 0) rem_secs = 0;
+            snprintf(status_line, sizeof(status_line),
+                     "Status: Reconnecting in %ds (attempt %d)",
+                     rem_secs, state->reconnect_attempts);
+            status_col = COL_ORANGE;
+            break;
+        }
         case CONN_ERROR:
-            status = state->conn_error;
+            snprintf(status_line, sizeof(status_line), "Status: %s", state->conn_error);
             status_col = COL_RED;
             break;
         default:
+            snprintf(status_line, sizeof(status_line), "Status: Disconnected");
             break;
     }
-    char status_line[MAX_STR_LEN + 16];
-    snprintf(status_line, sizeof(status_line), "Status: %s", status);
     draw_text(cx - text_width(0.85f, status_line) / 2, y, status_col, 0.85f, status_line);
 
     if (state->conn_state == CONN_CONNECTED && state->server.host_name[0]) {
@@ -776,8 +789,10 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
         }
 
         if (BTN_PRESSED(SCE_CTRL_START) || (state->selected_item == 2 && BTN_PRESSED(SCE_CTRL_CROSS))) {
-            if (state->conn_state == CONN_CONNECTED) {
+            if (state->conn_state == CONN_CONNECTED || state->conn_state == CONN_RECONNECTING) {
                 state->conn_state = CONN_DISCONNECTED;
+                state->auto_reconnect = 0;
+                state->reconnect_attempts = 0;
                 audio_stop(audio);
                 net_stream_disconnect(net);
                 net_control_disconnect(net);

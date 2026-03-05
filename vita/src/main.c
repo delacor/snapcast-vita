@@ -420,6 +420,11 @@ static void identify_self(AppState *state) {
 
 /* --- Connection management --- */
 
+static void cleanup_connection(NetContext *net) {
+    stop_streaming();
+    net_control_disconnect(net);
+}
+
 static void do_connect(AppState *state, NetContext *net) {
     memset(&g_state.server, 0, sizeof(g_state.server));
     g_state.our_client_id[0] = '\0';
@@ -436,6 +441,7 @@ static void do_connect(AppState *state, NetContext *net) {
     }
 
     state->conn_state = CONN_CONNECTED;
+    state->auto_reconnect = 1;
     start_streaming();
     net_rpc_get_status(net);
 }
@@ -444,6 +450,8 @@ static void do_disconnect(AppState *state, NetContext *net) {
     stop_streaming();
     net_control_disconnect(net);
     state->conn_state = CONN_DISCONNECTED;
+    state->auto_reconnect = 0;
+    state->reconnect_attempts = 0;
 }
 
 /* --- Entry point --- */
@@ -533,6 +541,34 @@ int main(void) {
         if (g_state.conn_state == CONN_CONNECTED && !stream_thread_running &&
             stream_thread_id < 0 && g_state.conn_error[0]) {
             g_state.conn_state = CONN_ERROR;
+        }
+
+        /* Auto-reconnect: transition from error to reconnecting with backoff */
+        if (g_state.conn_state == CONN_ERROR && g_state.auto_reconnect) {
+            cleanup_connection(&g_net);
+            int delay_secs = 1 << g_state.reconnect_attempts;
+            if (delay_secs > 30) delay_secs = 30;
+            g_state.reconnect_delay_frames = delay_secs * 60;
+            g_state.reconnect_timer = 0;
+            if (g_state.reconnect_attempts < 10)
+                g_state.reconnect_attempts++;
+            g_state.conn_state = CONN_RECONNECTING;
+            main_log("[main] reconnecting in %ds (attempt %d)\n",
+                     delay_secs, g_state.reconnect_attempts);
+        }
+
+        /* Handle reconnecting: wait for backoff delay then retry */
+        if (g_state.conn_state == CONN_RECONNECTING) {
+            g_state.reconnect_timer++;
+            if (g_state.reconnect_timer >= g_state.reconnect_delay_frames) {
+                main_log("[main] attempting reconnect (attempt %d)\n",
+                         g_state.reconnect_attempts);
+                do_connect(&g_state, &g_net);
+                if (g_state.conn_state == CONN_CONNECTED) {
+                    g_state.reconnect_attempts = 0;
+                    main_log("[main] reconnected successfully\n");
+                }
+            }
         }
 
         /* Render */

@@ -105,6 +105,7 @@ typedef enum {
     CONN_DISCONNECTED = 0,
     CONN_CONNECTING,
     CONN_CONNECTED,
+    CONN_RECONNECTING,
     CONN_ERROR
 } ConnectionState;
 
@@ -130,6 +131,11 @@ typedef struct {
     int ime_field;
 
     int running;
+
+    int auto_reconnect;
+    int reconnect_attempts;
+    int reconnect_timer;
+    int reconnect_delay_frames;
 } AppState;
 
 /* Binary protocol message types */
