@@ -361,31 +361,6 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
         if (age_buffer_full(&g_age_long))
             g_median_long = age_buffer_median(&g_age_long);
 
-        /* Hard sync if median drift is large */
-        int need_hard = 0;
-        if (age_buffer_full(&g_age_long)) {
-            int64_t abs_med = g_median_long < 0 ? -g_median_long : g_median_long;
-            if (abs_med > 50000) {
-                main_log("[sync] resync: long median=%lld us\n",
-                         (long long)g_median_long);
-                need_hard = 1;
-            }
-        }
-        if (!need_hard && age_buffer_full(&g_age_short)) {
-            int64_t abs_med = g_median_short < 0 ? -g_median_short : g_median_short;
-            if (abs_med > 100000) {
-                main_log("[sync] resync: short median=%lld us\n",
-                         (long long)g_median_short);
-                need_hard = 1;
-            }
-        }
-
-        if (need_hard) {
-            audio_flush(&g_audio);
-            reset_sync_buffers();
-            return;
-        }
-
         /* Soft sync: nudge sample rate to correct gradual drift */
         compute_soft_sync(g_audio.sample_rate > 0 ? g_audio.sample_rate : 48000);
 
