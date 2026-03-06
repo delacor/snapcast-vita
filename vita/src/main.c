@@ -260,7 +260,7 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
         int64_t elapsed = now - bw_last_usec;
         if (elapsed >= 1000000) {
             __atomic_store_n(&g_state.wire_kbps,
-                             (int)(bw_bytes * 8000LL / (elapsed / 1000)),
+                             (int)(bw_bytes * 8000LL / elapsed),
                              __ATOMIC_RELEASE);
             bw_bytes     = 0;
             bw_last_usec = now;
