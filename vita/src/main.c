@@ -19,8 +19,12 @@
 #include <psp2/rtc.h>
 #include <psp2/ctrl.h>
 #include <psp2/io/fcntl.h>
+#include <psp2/io/stat.h>
 
 static void main_log(const char *fmt, ...) {
+    /* Ensure directory exists (Vita may not create it automatically) */
+    sceIoMkdir("ux0:data", 0777);
+    sceIoMkdir("ux0:data/snapcast", 0777);
     SceUID fd = sceIoOpen("ux0:data/snapcast/debug.log",
                           SCE_O_WRONLY | SCE_O_CREAT | SCE_O_APPEND, 0666);
     if (fd < 0) return;
@@ -135,7 +139,7 @@ static void parse_codec_header(const char *payload, uint32_t size, AppState *sta
  * If it also sounds distorted, the issue is in data reception.
  * Set AUDIO_DUMP_ENABLED to 0 to disable.
  * ----------------------------------------------------------------------- */
-#define AUDIO_DUMP_ENABLED  1
+#define AUDIO_DUMP_ENABLED  0
 #define DUMP_BYTES          (192000 * 5)   /* 5 seconds @ 48 kHz stereo 16 bit */
 #define DUMP_FILE           "ux0:data/snapcast/audio_dump.raw"
 
@@ -226,6 +230,8 @@ static void reset_sync_buffers(void) {
     g_median_long = 0;
     g_median_short = 0;
     g_hard_sync = 1;
+    g_state.in_hard_sync = 1;
+    g_state.last_age_usec = 0;
     __atomic_store_n(&g_audio.correct_after_x_frames, 0, __ATOMIC_RELEASE);
 }
 
@@ -251,73 +257,101 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
 
     pcm_dump_write(pcm_data, (int)chunk_size);
 
-    /* If time sync hasn't converged yet, fall back to simple buffering */
+    /* Hard sync mode: just fill the ring buffer.
+     * The preroll mechanism holds the audio thread until effective_buf_ms of
+     * audio has accumulated, giving the same lead-time as other Snapcast clients.
+     * No age-based filtering here – age is meaningless until the ring is primed. */
+    if (g_hard_sync) {
+        audio_write(&g_audio, pcm_data, chunk_size);
+        if (g_audio.prerolled) {
+            g_hard_sync = 0;
+            g_state.in_hard_sync = 0;
+            age_buffer_clear(&g_age_mini);
+            age_buffer_clear(&g_age_short);
+            age_buffer_clear(&g_age_long);
+            main_log("[sync] hard sync complete (prerolled)  diff=%lld us  buf=%d ms\n",
+                     (long long)g_time_sync.diff_usec,
+                     g_state.buffer_ms - g_state.config.latency_ms);
+        }
+        return;
+    }
+
+    /* ---- Normal (post-hard-sync) mode ---- */
+
+    /* If time sync is not yet converged, write directly. */
     if (!time_sync_valid(&g_time_sync)) {
         audio_write(&g_audio, pcm_data, chunk_size);
         return;
     }
 
-    /* Compute chunk age: how late (+) or early (-) this chunk is.
-       age = serverNow - chunkTimestamp - effectiveBuffer + ringFillTime
-       The ring fill time approximates the DAC-to-ear delay in the ring buffer. */
-    int64_t chunk_ts_usec  = (int64_t)ts_sec * 1000000 + ts_usec;
-    int64_t server_now     = time_sync_server_now_usec(&g_time_sync);
-    int effective_buf_ms   = g_state.buffer_ms - g_state.config.latency_ms;
+    int64_t chunk_ts_usec = (int64_t)ts_sec * 1000000 + ts_usec;
+    int64_t server_now    = time_sync_server_now_usec(&g_time_sync);
+    int effective_buf_ms  = g_state.buffer_ms - g_state.config.latency_ms;
+    if (effective_buf_ms < 0) effective_buf_ms = 0;
+
+    /* Age formula:
+     *   age = server_now - chunk_ts - effective_buf_ms + ring_fill
+     *
+     * Derivation: the chunk will actually play at (server_now + ring_fill).
+     * It *should* play at (chunk_ts + effective_buf_ms).
+     * age = actual_play_time - intended_play_time.
+     *
+     * Steady state: server_now ≈ chunk_ts (chunk just received),
+     *               ring_fill  ≈ effective_buf_ms (maintained by preroll).
+     * → age ≈ 0  ✓
+     *
+     * age > 0: ring overfull or chunk arrived late  → slow down / drop
+     * age < 0: ring underfull or chunk arrived early → speed up / nothing */
     int64_t ring_fill_usec = 0;
     if (g_audio.bytes_per_frame > 0 && g_audio.sample_rate > 0) {
         int readable = audio_available(&g_audio);
         ring_fill_usec = (int64_t)readable * 1000000
                          / ((int64_t)g_audio.sample_rate * g_audio.bytes_per_frame);
     }
-
     int64_t age_usec = server_now - chunk_ts_usec
                        - (int64_t)effective_buf_ms * 1000
                        + ring_fill_usec;
 
-    if (g_hard_sync) {
-        /* Hard sync mode: align playback to the correct time */
-        int64_t chunk_dur_usec = 0;
-        if (g_audio.sample_rate > 0 && g_audio.bytes_per_frame > 0)
-            chunk_dur_usec = (int64_t)chunk_size * 1000000
-                             / ((int64_t)g_audio.sample_rate * g_audio.bytes_per_frame);
+    /* Expose for GUI */
+    g_state.last_age_usec = age_usec;
 
-        if (age_usec > 0) {
-            /* Chunk is too old: drop it entirely */
-            return;
-        }
-        if (age_usec < -(chunk_dur_usec + 5000)) {
-            /* Chunk is very early: buffer it and output silence later */
-            audio_write(&g_audio, pcm_data, chunk_size);
-            return;
-        }
+    static int first_synced_chunk = 0;
+    if (!first_synced_chunk) {
+        first_synced_chunk = 1;
+        main_log("[sync] first normal chunk: age=%lld us  ring=%lld us"
+                 "  buf=%d ms  diff=%lld us\n",
+                 (long long)age_usec, (long long)ring_fill_usec,
+                 effective_buf_ms, (long long)g_time_sync.diff_usec);
+    }
 
-        /* Age is close to 0: we're aligned. Write and exit hard sync. */
-        audio_write(&g_audio, pcm_data, chunk_size);
-        g_hard_sync = 0;
-        age_buffer_clear(&g_age_mini);
-        age_buffer_clear(&g_age_short);
-        age_buffer_clear(&g_age_long);
-        main_log("[sync] hard sync complete, age=%lld us\n", (long long)age_usec);
+    /* Drop chunks that are very late (> 500ms): we've fallen behind. */
+    if (age_usec > 500000) {
+        static int drop_count = 0;
+        drop_count++;
+        if (drop_count <= 3 || drop_count % 20 == 0)
+            main_log("[sync] DROP #%d: age=%lld us > 500ms\n",
+                     drop_count, (long long)age_usec);
         return;
     }
 
-    /* Normal mode: write data and track age for soft sync */
+    /* Write chunk and track age for soft sync */
     audio_write(&g_audio, pcm_data, chunk_size);
 
-    age_buffer_add(&g_age_mini, age_usec);
+    age_buffer_add(&g_age_mini,  age_usec);
     age_buffer_add(&g_age_short, age_usec);
-    age_buffer_add(&g_age_long, age_usec);
+    age_buffer_add(&g_age_long,  age_usec);
 
-    /* Check for immediate hard sync on extreme age */
+    /* Emergency hard sync if age is wildly off (> 2 seconds) */
     int64_t abs_age = age_usec < 0 ? -age_usec : age_usec;
-    if (abs_age > 500000) {
-        main_log("[sync] hard sync: |age|=%lld us > 500ms\n", (long long)abs_age);
+    if (abs_age > 2000000) {
+        main_log("[sync] emergency hard sync: |age|=%lld us > 2s\n",
+                 (long long)abs_age);
         audio_flush(&g_audio);
         reset_sync_buffers();
         return;
     }
 
-    /* Update medians and check hard/soft sync once per second (~50 chunks) */
+    /* Update medians and soft sync every ~1 second (50 chunks @ 20ms) */
     static int median_counter = 0;
     if (++median_counter >= 50) {
         median_counter = 0;
@@ -327,30 +361,21 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
         if (age_buffer_full(&g_age_long))
             g_median_long = age_buffer_median(&g_age_long);
 
-        /* Check median-based hard sync triggers */
+        /* Hard sync if median drift is large */
         int need_hard = 0;
         if (age_buffer_full(&g_age_long)) {
             int64_t abs_med = g_median_long < 0 ? -g_median_long : g_median_long;
-            if (abs_med > 2000 && abs_age > 500) {
-                main_log("[sync] hard sync: long median=%lld us\n",
+            if (abs_med > 50000) {
+                main_log("[sync] resync: long median=%lld us\n",
                          (long long)g_median_long);
                 need_hard = 1;
             }
         }
         if (!need_hard && age_buffer_full(&g_age_short)) {
             int64_t abs_med = g_median_short < 0 ? -g_median_short : g_median_short;
-            if (abs_med > 5000 && abs_age > 500) {
-                main_log("[sync] hard sync: short median=%lld us\n",
+            if (abs_med > 100000) {
+                main_log("[sync] resync: short median=%lld us\n",
                          (long long)g_median_short);
-                need_hard = 1;
-            }
-        }
-        if (!need_hard && age_buffer_full(&g_age_mini)) {
-            int64_t mini_med = age_buffer_median(&g_age_mini);
-            int64_t abs_med = mini_med < 0 ? -mini_med : mini_med;
-            if (abs_med > 50000 && abs_age > 500) {
-                main_log("[sync] hard sync: mini median=%lld us\n",
-                         (long long)mini_med);
                 need_hard = 1;
             }
         }
@@ -361,14 +386,15 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
             return;
         }
 
-        /* Drive soft sync based on median age */
+        /* Soft sync: nudge sample rate to correct gradual drift */
         compute_soft_sync(g_audio.sample_rate > 0 ? g_audio.sample_rate : 48000);
 
-        main_log("[sync] age=%lld  short=%lld  long=%lld  corr=%d\n",
+        main_log("[sync] age=%lld  short=%lld  long=%lld  corr=%d  diff=%lld\n",
                  (long long)age_usec,
                  (long long)g_median_short,
                  (long long)g_median_long,
-                 __atomic_load_n(&g_audio.correct_after_x_frames, __ATOMIC_ACQUIRE));
+                 __atomic_load_n(&g_audio.correct_after_x_frames, __ATOMIC_ACQUIRE),
+                 (long long)g_time_sync.diff_usec);
     }
 }
 
@@ -410,6 +436,15 @@ static int stream_thread_func(SceSize args, void *argp) {
             break;
         }
 
+        {
+            static int first_msg = 1;
+            if (first_msg) {
+                first_msg = 0;
+                main_log("[main] first stream msg: type=%u size=%u\n",
+                         (unsigned)hdr.type, (unsigned)hdr.size);
+            }
+        }
+
         switch (hdr.type) {
             case MSG_SERVER_SETTINGS:
                 parse_server_settings(payload, hdr.size, state);
@@ -418,18 +453,25 @@ static int stream_thread_func(SceSize args, void *argp) {
             case MSG_CODEC_HEADER:
                 parse_codec_header(payload, hdr.size, state);
                 codec_received = 1;
-                main_log("[main] codec_header: codec='%s' rate=%d ch=%d bits=%d bufMs=%d\n",
-                         state->codec, state->sample_rate, state->channels,
-                         state->bits, state->buffer_ms);
-                pcm_dump_init();
-                audio_flush(&g_audio);
-                reset_sync_buffers();
-                audio_configure(&g_audio,
-                    state->sample_rate  > 0 ? state->sample_rate  : 48000,
-                    state->channels     > 0 ? state->channels     : 2,
-                    state->bits         > 0 ? state->bits         : 16,
-                    50);
-                audio_start(&g_audio);
+                {
+                    int eff_buf = state->buffer_ms - state->config.latency_ms;
+                    if (eff_buf < 50)  eff_buf = 50;
+                    if (eff_buf > 5000) eff_buf = 5000;
+                    main_log("[main] codec_header: codec='%s' rate=%d ch=%d bits=%d"
+                             " bufMs=%d latMs=%d preroll=%dms\n",
+                             state->codec, state->sample_rate, state->channels,
+                             state->bits, state->buffer_ms,
+                             state->config.latency_ms, eff_buf);
+                    pcm_dump_init();
+                    audio_flush(&g_audio);
+                    reset_sync_buffers();
+                    audio_configure(&g_audio,
+                        state->sample_rate  > 0 ? state->sample_rate  : 48000,
+                        state->channels     > 0 ? state->channels     : 2,
+                        state->bits         > 0 ? state->bits         : 16,
+                        eff_buf);
+                    audio_start(&g_audio);
+                }
                 break;
 
             case MSG_WIRE_CHUNK:
@@ -446,6 +488,19 @@ static int stream_thread_func(SceSize args, void *argp) {
                     int64_t s2c = ((int64_t)hdr.received_sec - hdr.sent_sec) * 1000000
                                 + (hdr.received_usec - hdr.sent_usec);
                     time_sync_update(&g_time_sync, c2s, s2c);
+
+                    /* Keep AppState in sync for GUI display */
+                    g_state.time_diff_usec  = g_time_sync.diff_usec;
+                    g_state.time_sync_count = g_time_sync.count;
+
+                    static int ts_log_count = 0;
+                    ts_log_count++;
+                    if (ts_log_count <= 10 || ts_log_count % 50 == 0) {
+                        main_log("[time] #%d c2s=%lld s2c=%lld diff=%lld us\n",
+                                 ts_log_count,
+                                 (long long)c2s, (long long)s2c,
+                                 (long long)g_time_sync.diff_usec);
+                    }
                 }
                 break;
 
@@ -632,6 +687,10 @@ static void do_connect(AppState *state, NetContext *net) {
     g_state.sample_rate = 0;
     g_state.bits = 0;
     g_state.channels = 0;
+    g_state.time_diff_usec  = 0;
+    g_state.time_sync_count = 0;
+    g_state.last_age_usec   = 0;
+    g_state.in_hard_sync    = 1;
     audio_flush(&g_audio);
     time_sync_init(&g_time_sync);
     reset_sync_buffers();
@@ -659,6 +718,10 @@ static void do_disconnect(AppState *state, NetContext *net) {
 /* --- Entry point --- */
 
 int main(void) {
+    /* Establish the relative tick base before any timing code runs.
+     * This prevents int32_t overflow in get_time() / net_send_time(). */
+    time_sync_tick_init();
+
     scePowerSetArmClockFrequency(444);
     scePowerSetBusClockFrequency(222);
     scePowerSetGpuClockFrequency(222);
@@ -666,6 +729,8 @@ int main(void) {
 
     sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
     sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
+
+    main_log("[main] snapcast-vita start\n");
 
     memset(&g_state, 0, sizeof(g_state));
     memset(&g_net, 0, sizeof(g_net));

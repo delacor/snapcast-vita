@@ -242,8 +242,6 @@ static void draw_connect_screen(AppState *state) {
     /* Debug hints */
     draw_text(cx - 160, SCREEN_H - BOTTOM_BAR_H - 32, COL_DIM, 0.60f,
               "Debug log: ux0:data/snapcast/debug.log");
-    draw_text(cx - 160, SCREEN_H - BOTTOM_BAR_H - 16, COL_DIM, 0.60f,
-              "PCM dump:  ux0:data/snapcast/audio_dump.raw  (5s, sox -r 48000 -e signed-integer -b 16 -c 2 -L)");
 }
 
 /* --- Player screen --- */
@@ -622,6 +620,38 @@ static void draw_settings_screen(AppState *state, AudioContext *audio) {
                       audio->prerolled ? "yes" : "buffering...");
             y += 30;
         }
+
+        /* Time sync info */
+        draw_text(lx, y + 14, COL_GRAY, 0.85f, "Time sync:");
+        {
+            char tsbuf[96];
+            if (state->time_sync_count == 0) {
+                snprintf(tsbuf, sizeof(tsbuf), "waiting...");
+                draw_text(lx + 170, y + 14, COL_ORANGE, 0.85f, tsbuf);
+            } else {
+                int64_t diff_ms = state->time_diff_usec / 1000;
+                snprintf(tsbuf, sizeof(tsbuf), "#%d  diff=%lld ms",
+                         state->time_sync_count, (long long)diff_ms);
+                draw_text(lx + 170, y + 14, COL_GREEN, 0.75f, tsbuf);
+            }
+        }
+        y += 30;
+
+        draw_text(lx, y + 14, COL_GRAY, 0.85f, "Age:");
+        {
+            char agebuf[64];
+            int64_t age_ms = state->last_age_usec / 1000;
+            const char *hs = state->in_hard_sync ? " [hard-sync]" : "";
+            snprintf(agebuf, sizeof(agebuf), "%lld ms%s",
+                     (long long)age_ms, hs);
+            unsigned int age_col = COL_GREEN;
+            int64_t abs_age = state->last_age_usec < 0
+                              ? -state->last_age_usec : state->last_age_usec;
+            if (abs_age > 100000) age_col = COL_ORANGE;
+            if (abs_age > 500000) age_col = COL_RED;
+            draw_text(lx + 170, y + 14, age_col, 0.85f, agebuf);
+        }
+        y += 30;
     }
 
     y += 20;

@@ -136,6 +136,12 @@ typedef struct {
     int reconnect_attempts;
     int reconnect_timer;
     int reconnect_delay_frames;
+
+    /* Time sync status (updated from stream thread) */
+    volatile int64_t time_diff_usec;  /* server_time - vita_time in µs */
+    volatile int      time_sync_count; /* number of samples collected */
+    volatile int64_t  last_age_usec;   /* most recent chunk age in µs */
+    volatile int      in_hard_sync;    /* 1 while hard sync is active */
 } AppState;
 
 /* Binary protocol message types */

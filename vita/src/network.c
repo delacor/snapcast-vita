@@ -1,11 +1,11 @@
 #include "network.h"
+#include "time_sync.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <psp2/net/net.h>
 #include <psp2/net/netctl.h>
 #include <psp2/kernel/processmgr.h>
-#include <psp2/rtc.h>
 
 static void *net_memory = NULL;
 
@@ -82,10 +82,13 @@ static int tcp_recv_all(int sock, void *buf, int len) {
 }
 
 static void get_time(int32_t *sec, int32_t *usec) {
-    SceRtcTick tick;
-    sceRtcGetCurrentTick(&tick);
-    *sec = (int32_t)(tick.tick / 1000000);
-    *usec = (int32_t)(tick.tick % 1000000);
+    /* Use the same relative clock as get_tick_usec() so that sent_sec/received_sec
+     * stay small (seconds since app start) and never overflow int32_t.
+     * The PSVita absolute RTC epoch (year 0001) would give ~63.85e9 seconds which
+     * wraps int32_t, producing garbage latency values on the server side. */
+    int64_t t = get_tick_usec();
+    *sec  = (int32_t)(t / 1000000);
+    *usec = (int32_t)(t % 1000000);
 }
 
 /* --- Streaming connection (binary protocol) --- */

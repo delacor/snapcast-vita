@@ -29,6 +29,11 @@ void     time_sync_update(TimeSync *ts, int64_t c2s_usec, int64_t s2c_usec);
 int64_t  time_sync_server_now_usec(const TimeSync *ts);
 int      time_sync_valid(const TimeSync *ts);
 
+/* Call once at app start to establish the relative tick base.
+   All subsequent get_tick_usec() calls return µs since this call.
+   This keeps the sec/usec values small (no int32_t overflow). */
+void     time_sync_tick_init(void);
+
 /* AgeBuffer: rolling buffer with median for chunk age tracking */
 int      age_buffer_init(AgeBuffer *ab, int capacity);
 void     age_buffer_free(AgeBuffer *ab);

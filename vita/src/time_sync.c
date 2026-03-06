@@ -3,10 +3,19 @@
 #include <stdlib.h>
 #include <psp2/rtc.h>
 
+/* Base tick set once at app start so all relative values fit in int32_t */
+static int64_t g_tick_base = 0;
+
+void time_sync_tick_init(void) {
+    SceRtcTick tick;
+    sceRtcGetCurrentTick(&tick);
+    g_tick_base = (int64_t)tick.tick;
+}
+
 int64_t get_tick_usec(void) {
     SceRtcTick tick;
     sceRtcGetCurrentTick(&tick);
-    return (int64_t)tick.tick;
+    return (int64_t)tick.tick - g_tick_base;
 }
 
 static int cmp_int64(const void *a, const void *b) {
@@ -33,6 +42,10 @@ void time_sync_init(TimeSync *ts) {
 }
 
 void time_sync_update(TimeSync *ts, int64_t c2s_usec, int64_t s2c_usec) {
+    /* NTP clock-offset formula: diff = (c2s - s2c) / 2
+     *   c2s = server_received - client_sent  (one-way latency client->server)
+     *   s2c = client_received - server_sent  (one-way latency server->client)
+     * For symmetric transit: diff = clock_offset = server_time - client_time  */
     int64_t diff = (c2s_usec - s2c_usec) / 2;
 
     ts->samples[ts->write_idx] = diff;
