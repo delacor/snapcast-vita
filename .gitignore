@@ -71,3 +71,4 @@ server/etc/certs
 
 extras/package/debian/snap*.debhelper.log
 vita/CMakeFiles/CMakeConfigureLog.yaml
+vita/CMakeFiles/CMakeConfigureLog.yaml

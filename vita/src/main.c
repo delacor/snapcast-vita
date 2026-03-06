@@ -5,6 +5,7 @@
 #include "audio.h"
 #include "gui.h"
 #include "time_sync.h"
+#include <opus/opus.h>
 
 #include <math.h>
 #include <stdarg.h>
@@ -41,6 +42,7 @@ static AppState g_state;
 static NetContext g_net;
 static AudioContext g_audio;
 static TimeSync g_time_sync;
+static OpusDecoder *g_opus_dec = NULL;
 
 /* Age tracking buffers for soft sync */
 static AgeBuffer g_age_mini;
@@ -248,6 +250,38 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
 
     const char *pcm_data = payload + 12;
 
+    /* Measure compressed wire bitrate (bytes before any decode) */
+    {
+        static int64_t bw_last_usec = 0;
+        static int64_t bw_bytes     = 0;
+        int64_t now = get_tick_usec();
+        bw_bytes += chunk_size;
+        if (bw_last_usec == 0) bw_last_usec = now;
+        int64_t elapsed = now - bw_last_usec;
+        if (elapsed >= 1000000) {
+            __atomic_store_n(&g_state.wire_kbps,
+                             (int)(bw_bytes * 8000LL / (elapsed / 1000)),
+                             __ATOMIC_RELEASE);
+            bw_bytes     = 0;
+            bw_last_usec = now;
+        }
+    }
+
+    /* Decode Opus frames into PCM before any further processing */
+    static opus_int16 s_opus_buf[5760 * 2]; /* max 120 ms frame @ 48 kHz stereo */
+    if (strcmp(g_state.codec, "opus") == 0) {
+        if (!g_opus_dec) return;
+        int frames = opus_decode(g_opus_dec,
+                                 (const unsigned char *)pcm_data, (opus_int32)chunk_size,
+                                 s_opus_buf, 5760, 0);
+        if (frames <= 0) {
+            main_log("[opus] decode error: %d (%s)\n", frames, opus_strerror(frames));
+            return;
+        }
+        pcm_data  = (const char *)s_opus_buf;
+        chunk_size = (uint32_t)(frames * g_audio.channels * sizeof(opus_int16));
+    }
+
     static int first_chunk_logged = 0;
     if (!first_chunk_logged) {
         main_log("[main] first wire_chunk: chunk_size=%u (expected 3840 @ 48kHz/20ms)\n",
@@ -437,6 +471,24 @@ static int stream_thread_func(SceSize args, void *argp) {
                              state->codec, state->sample_rate, state->channels,
                              state->bits, state->buffer_ms,
                              state->config.latency_ms, eff_buf);
+
+                    /* (Re-)create Opus decoder when the server uses Opus */
+                    if (g_opus_dec) {
+                        opus_decoder_destroy(g_opus_dec);
+                        g_opus_dec = NULL;
+                    }
+                    if (strcmp(state->codec, "opus") == 0) {
+                        int err = 0;
+                        int dec_rate = state->sample_rate > 0 ? state->sample_rate : 48000;
+                        int dec_ch   = state->channels    > 0 ? state->channels    : 2;
+                        g_opus_dec = opus_decoder_create(dec_rate, dec_ch, &err);
+                        if (g_opus_dec)
+                            main_log("[opus] decoder created: rate=%d ch=%d\n",
+                                     dec_rate, dec_ch);
+                        else
+                            main_log("[opus] decoder create failed: err=%d\n", err);
+                    }
+
                     pcm_dump_init();
                     audio_flush(&g_audio);
                     reset_sync_buffers();
@@ -535,6 +587,10 @@ static void stop_streaming(void) {
         stream_thread_id = -1;
     }
     audio_stop(&g_audio);
+    if (g_opus_dec) {
+        opus_decoder_destroy(g_opus_dec);
+        g_opus_dec = NULL;
+    }
 }
 
 /* --- JSON-RPC message processing --- */
@@ -666,6 +722,7 @@ static void do_connect(AppState *state, NetContext *net) {
     g_state.time_sync_count = 0;
     g_state.last_age_usec   = 0;
     g_state.in_hard_sync    = 1;
+    g_state.wire_kbps       = 0;
     audio_flush(&g_audio);
     time_sync_init(&g_time_sync);
     reset_sync_buffers();

@@ -97,9 +97,10 @@ vita/
 
 ## Supported Codecs
 
-Currently PCM is fully supported. The codec header parsing also recognizes FLAC and Opus
-headers, but decoding for those codecs requires linking additional libraries (libFLAC, libopus)
-which can be added as future enhancements.
+- **PCM** – fully supported (48 kHz / 16-bit / stereo)
+- **Opus** – fully supported via libopus; configure the server with `codec = opus` in
+  `snapserver.conf` for ~10–20× bandwidth reduction vs PCM
+- **FLAC** – codec header is recognised but decoding is not yet implemented (requires libFLAC)
 
 ## Network Protocol
 

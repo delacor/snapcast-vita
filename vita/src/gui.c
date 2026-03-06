@@ -373,11 +373,16 @@ static void draw_player_screen(AppState *state, AudioContext *audio) {
     /* Audio info footer + buffer fill bar */
     y = SCREEN_H - BOTTOM_BAR_H - 52;
     if (state->codec[0]) {
-        char audio_info[128];
+        char bw_str[24] = "";
+        int kbps = __atomic_load_n(&state->wire_kbps, __ATOMIC_ACQUIRE);
+        if (kbps > 0)
+            snprintf(bw_str, sizeof(bw_str), "  %d kbps", kbps);
+
+        char audio_info[160];
         snprintf(audio_info, sizeof(audio_info),
-                 "Codec: %s  %dHz/%dbit/%dch  srv-buf: %dms",
+                 "Codec: %s  %dHz/%dbit/%dch%s  buf: %dms",
                  state->codec, state->sample_rate, state->bits,
-                 state->channels, state->buffer_ms);
+                 state->channels, bw_str, state->buffer_ms);
         draw_text(40, y, COL_DIM, 0.7f, audio_info);
     }
     y += 20;
