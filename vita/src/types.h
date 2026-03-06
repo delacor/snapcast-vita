@@ -142,6 +142,9 @@ typedef struct {
     volatile int      time_sync_count; /* number of samples collected */
     volatile int64_t  last_age_usec;   /* most recent chunk age in µs */
     volatile int      in_hard_sync;    /* 1 while hard sync is active */
+
+    /* Network bandwidth (updated from stream thread) */
+    volatile int wire_kbps; /* measured compressed wire bitrate in kbps */
 } AppState;
 
 /* Binary protocol message types */
