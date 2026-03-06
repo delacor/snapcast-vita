@@ -48,9 +48,17 @@ typedef struct {
     int volume;
     int muted;
 
+    /* Soft sync: sample rate correction driven by stream thread.
+       >0 = drop 1 frame every N frames (speed up, when behind)
+       <0 = duplicate 1 frame every N frames (slow down, when ahead)
+        0 = no correction */
+    volatile int correct_after_x_frames;
+
     /* Debug counters */
     volatile int stat_underruns;
     volatile int stat_overflows;
+    volatile int stat_drops;       /* frames dropped by soft sync */
+    volatile int stat_inserts;     /* frames duplicated by soft sync */
 } AudioContext;
 
 int  audio_init(AudioContext *ctx);

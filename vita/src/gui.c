@@ -389,14 +389,15 @@ static void draw_player_screen(AppState *state, AudioContext *audio) {
         int bar_x = 40, bar_w = 500, bar_h = 8;
         draw_slider(bar_x, y, bar_w, bar_h, fill, COL_PRIMARY, COL_SLIDER_BG);
 
-        char fill_str[64];
+        char fill_str[96];
         int fill_kb = (int)(fill * AUDIO_RING_SIZE / 1024);
-        snprintf(fill_str, sizeof(fill_str), "ring: %dKB/%dKB  U:%d O:%d",
+        int corr = __atomic_load_n(&audio->correct_after_x_frames, __ATOMIC_ACQUIRE);
+        snprintf(fill_str, sizeof(fill_str), "ring: %dKB/%dKB  U:%d O:%d  sync:%s%d",
                  fill_kb, AUDIO_RING_SIZE / 1024,
-                 audio->stat_underruns, audio->stat_overflows);
+                 audio->stat_underruns, audio->stat_overflows,
+                 corr > 0 ? "+" : "", corr);
         draw_text(bar_x + bar_w + 12, y + 6, COL_DIM, 0.65f, fill_str);
 
-        /* Color the bar red if critically low (likely about to underrun) */
         if (fill < 0.1f && audio->prerolled) {
             draw_slider(bar_x, y, (int)(bar_w * fill), bar_h, 1.0f, COL_RED, COL_SLIDER_BG);
         }
@@ -592,10 +593,27 @@ static void draw_settings_screen(AppState *state, AudioContext *audio) {
             float fill = audio_fill_ratio(audio);
             int bar_w = 200;
             draw_slider(lx + 170, y + 8, bar_w, 10, fill, COL_SLIDER_FG, COL_SLIDER_BG);
-            char rbuf[64];
-            snprintf(rbuf, sizeof(rbuf), " %.0f%%  U:%d  O:%d",
-                     fill * 100.f, audio->stat_underruns, audio->stat_overflows);
+            char rbuf[96];
+            snprintf(rbuf, sizeof(rbuf), " %.0f%%  U:%d  O:%d  D:%d  I:%d",
+                     fill * 100.f, audio->stat_underruns, audio->stat_overflows,
+                     audio->stat_drops, audio->stat_inserts);
             draw_text(lx + 170 + bar_w, y + 14, COL_DIM, 0.75f, rbuf);
+            y += 30;
+
+            draw_text(lx, y + 14, COL_GRAY, 0.85f, "Sync:");
+            {
+                int corr = __atomic_load_n(&audio->correct_after_x_frames,
+                                           __ATOMIC_ACQUIRE);
+                char sbuf[64];
+                if (corr == 0)
+                    snprintf(sbuf, sizeof(sbuf), "idle");
+                else if (corr > 0)
+                    snprintf(sbuf, sizeof(sbuf), "drop 1/%d frames", corr);
+                else
+                    snprintf(sbuf, sizeof(sbuf), "dup 1/%d frames", -corr);
+                draw_text(lx + 170, y + 14,
+                          corr == 0 ? COL_GREEN : COL_ORANGE, 0.85f, sbuf);
+            }
             y += 30;
 
             draw_text(lx, y + 14, COL_GRAY, 0.85f, "Prerolled:");

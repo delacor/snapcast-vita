@@ -1,11 +1,21 @@
-cmake_minimum_required(VERSION 3.0)
+cmake_minimum_required(VERSION 3.10)
 
 if(NOT DEFINED CMAKE_TOOLCHAIN_FILE)
   if(DEFINED ENV{VITASDK})
     set(CMAKE_TOOLCHAIN_FILE "$ENV{VITASDK}/share/vita.toolchain.cmake" CACHE PATH "toolchain file")
   else()
-    message(FATAL_ERROR "Please define VITASDK to point to your SDK path!")
+    message(FATAL_ERROR
+      "VITASDK is not set. Install the Vita SDK and set VITASDK to its path, e.g.:\n"
+      "  export VITASDK=/usr/local/vitasdk\n"
+      "See vita/README.md for install instructions (vdpm / vitasdk).")
   endif()
+endif()
+
+if(NOT EXISTS "${CMAKE_TOOLCHAIN_FILE}")
+  message(FATAL_ERROR
+    "Vita SDK toolchain not found:\n  ${CMAKE_TOOLCHAIN_FILE}\n"
+    "Install the Vita SDK (see https://vitasdk.org/ or vita/README.md) and set VITASDK to the SDK path, e.g.:\n"
+    "  export VITASDK=/usr/local/vitasdk")
 endif()
 
 project(snapcast_vita C)
@@ -25,6 +35,7 @@ add_executable(${PROJECT_NAME}
   src/network.c
   src/audio.c
   src/gui.c
+  src/time_sync.c
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE

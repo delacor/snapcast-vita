@@ -139,52 +139,112 @@ float audio_fill_ratio(AudioContext *ctx) {
 static int audio_thread(SceSize args, void *argp) {
     AudioContext *ctx = *(AudioContext **)argp;
 
-    int frame_bytes = AUDIO_GRAIN * ctx->channels * (ctx->bits / 8);
+    int bpf = ctx->channels * (ctx->bits / 8);
+    int frame_bytes = AUDIO_GRAIN * bpf;
 
-    /* Allocate output buffer on heap — not on the 64 KB thread stack */
-    void *buf = malloc(frame_bytes);
-    if (!buf) return -1;
+    #define MAX_FRAME_CORRECTION 4
+    void *buf = malloc(frame_bytes + MAX_FRAME_CORRECTION * bpf);
+    void *out_buf = malloc(frame_bytes);
+    if (!buf || !out_buf) { free(buf); free(out_buf); return -1; }
 
     int stat_period = 0;
+    uint32_t played_frames = 0;
 
     while (__atomic_load_n(&ctx->running, __ATOMIC_ACQUIRE)) {
 
-        /* --- Pre-roll: output silence until enough data has buffered --- */
         if (!__atomic_load_n(&ctx->prerolled, __ATOMIC_ACQUIRE)) {
-            memset(buf, 0, frame_bytes);
-            sceAudioOutOutput(ctx->port, buf);
+            memset(out_buf, 0, frame_bytes);
+            sceAudioOutOutput(ctx->port, out_buf);
             continue;
         }
 
-        /* --- Normal / underrun path --- */
-        int avail = ring_readable(ctx);
-
-        if (avail >= frame_bytes) {
-            ring_read(ctx, buf, frame_bytes);
-        } else {
-            /*
-             * Underrun: drain whatever remains and zero-pad to a full grain.
-             * Zeroing the whole buffer first guarantees clean silence even
-             * if ring_read returns fewer bytes than expected.
-             */
-            memset(buf, 0, frame_bytes);
-            if (avail > 0) ring_read(ctx, buf, avail);
-            ctx->stat_underruns++;
+        /* Determine soft-sync frame correction for this grain */
+        int corr = __atomic_load_n(&ctx->correct_after_x_frames, __ATOMIC_ACQUIRE);
+        int frames_correction = 0;
+        if (corr != 0) {
+            played_frames += AUDIO_GRAIN;
+            if (played_frames >= (uint32_t)abs(corr)) {
+                frames_correction = (int)played_frames / corr;
+                played_frames %= (uint32_t)abs(corr);
+            }
         }
 
-        sceAudioOutOutput(ctx->port, buf);
+        if (frames_correction > MAX_FRAME_CORRECTION)
+            frames_correction = MAX_FRAME_CORRECTION;
+        if (frames_correction < -MAX_FRAME_CORRECTION)
+            frames_correction = -MAX_FRAME_CORRECTION;
+        if (frames_correction < 0 && AUDIO_GRAIN + frames_correction < 1)
+            frames_correction = -(AUDIO_GRAIN - 1);
 
-        /* Periodic diagnostic log (every ~5 s worth of frames) */
+        int to_read_frames = AUDIO_GRAIN + frames_correction;
+        int to_read_bytes = to_read_frames * bpf;
+
+        int avail = ring_readable(ctx);
+
+        if (avail >= to_read_bytes) {
+            ring_read(ctx, buf, to_read_bytes);
+        } else if (avail >= frame_bytes) {
+            ring_read(ctx, buf, frame_bytes);
+            to_read_frames = AUDIO_GRAIN;
+            frames_correction = 0;
+        } else {
+            memset(out_buf, 0, frame_bytes);
+            if (avail > 0) ring_read(ctx, out_buf, avail);
+            ctx->stat_underruns++;
+            sceAudioOutOutput(ctx->port, out_buf);
+            continue;
+        }
+
+        if (frames_correction == 0) {
+            memcpy(out_buf, buf, frame_bytes);
+        } else {
+            /* Distribute frame drops/duplicates evenly across the grain,
+               mirroring the C++ client's "slices" approach. */
+            int abs_corr = frames_correction < 0 ? -frames_correction : frames_correction;
+            int max_f = frames_correction < 0 ? AUDIO_GRAIN : to_read_frames;
+            int slices = abs_corr + 1;
+            if (slices > max_f) slices = max_f;
+            int slice_size = max_f / slices;
+            int pos = 0;
+
+            for (int n = 0; n < slices; n++) {
+                int sz = (n + 1 == slices) ? (max_f - pos) : slice_size;
+
+                if (frames_correction > 0) {
+                    /* Drop: read all input, skip 1 frame per slice in output */
+                    memcpy((char *)out_buf + (pos - n) * bpf,
+                           (char *)buf + pos * bpf,
+                           sz * bpf);
+                } else {
+                    /* Duplicate: read fewer input, duplicate 1 frame per slice in output */
+                    memcpy((char *)out_buf + pos * bpf,
+                           (char *)buf + (pos - n) * bpf,
+                           sz * bpf);
+                }
+                pos += sz;
+            }
+
+            if (frames_correction > 0)
+                ctx->stat_drops += abs_corr;
+            else
+                ctx->stat_inserts += abs_corr;
+        }
+
+        sceAudioOutOutput(ctx->port, out_buf);
+
         stat_period++;
         if (stat_period >= 500) {
             stat_period = 0;
-            audio_log("[audio] fill=%d/%d  U=%d  O=%d\n",
+            audio_log("[audio] fill=%d/%d  U=%d O=%d  drop=%d ins=%d  corr=%d\n",
                       ring_readable(ctx), AUDIO_RING_SIZE,
-                      ctx->stat_underruns, ctx->stat_overflows);
+                      ctx->stat_underruns, ctx->stat_overflows,
+                      ctx->stat_drops, ctx->stat_inserts,
+                      __atomic_load_n(&ctx->correct_after_x_frames, __ATOMIC_ACQUIRE));
         }
     }
 
     free(buf);
+    free(out_buf);
     return 0;
 }
 
@@ -292,8 +352,11 @@ void audio_flush(AudioContext *ctx) {
     int w = atomic_load_acq(&ctx->write_pos);
     atomic_store_rel(&ctx->read_pos, w);
     __atomic_store_n(&ctx->prerolled, 0, __ATOMIC_RELEASE);
+    __atomic_store_n(&ctx->correct_after_x_frames, 0, __ATOMIC_RELEASE);
     ctx->stat_underruns = 0;
     ctx->stat_overflows = 0;
+    ctx->stat_drops = 0;
+    ctx->stat_inserts = 0;
 }
 
 void audio_start(AudioContext *ctx) {

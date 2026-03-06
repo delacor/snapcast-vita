@@ -4,7 +4,9 @@
 #include "network.h"
 #include "audio.h"
 #include "gui.h"
+#include "time_sync.h"
 
+#include <math.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -34,6 +36,18 @@ static void main_log(const char *fmt, ...) {
 static AppState g_state;
 static NetContext g_net;
 static AudioContext g_audio;
+static TimeSync g_time_sync;
+
+/* Age tracking buffers for soft sync */
+static AgeBuffer g_age_mini;
+static AgeBuffer g_age_short;
+static AgeBuffer g_age_long;
+static int64_t   g_median_long  = 0;
+static int64_t   g_median_short = 0;
+static int       g_hard_sync    = 1;
+
+/* Threshold below which soft sync kicks in (microseconds) */
+#define SOFT_SYNC_BEGIN_USEC  100
 
 /* --- Streaming thread --- */
 
@@ -163,17 +177,71 @@ static void pcm_dump_write(const void *data, int size) {
 #endif
 }
 
+/* Compute the effective sample rate correction and set it on the audio context.
+   Mirrors the C++ client's Stream::setRealSampleRate + soft sync logic. */
+static void compute_soft_sync(int sample_rate) {
+    if (!age_buffer_full(&g_age_short)) {
+        __atomic_store_n(&g_audio.correct_after_x_frames, 0, __ATOMIC_RELEASE);
+        return;
+    }
+
+    int64_t mini_med  = age_buffer_median(&g_age_mini);
+    int64_t short_med = g_median_short;
+    int correction = 0;
+
+    if (short_med > SOFT_SYNC_BEGIN_USEC &&
+        mini_med > 50 &&
+        short_med > 50)
+    {
+        /* We are behind (positive age): speed up by dropping frames */
+        double rate = ((double)short_med / 100.0) * 0.00005;
+        if (rate > 0.0005) rate = 0.0005;
+        double real_rate = (double)sample_rate * (1.0 - rate);
+        if (real_rate != (double)sample_rate) {
+            double ratio = (double)sample_rate / real_rate;
+            correction = (int)round(ratio / (ratio - 1.0));
+        }
+    }
+    else if (short_med < -SOFT_SYNC_BEGIN_USEC &&
+             mini_med < -50 &&
+             short_med < -50)
+    {
+        /* We are ahead (negative age): slow down by duplicating frames */
+        double rate = ((double)(-short_med) / 100.0) * 0.00005;
+        if (rate > 0.0005) rate = 0.0005;
+        double real_rate = (double)sample_rate * (1.0 + rate);
+        if (real_rate != (double)sample_rate) {
+            double ratio = (double)sample_rate / real_rate;
+            correction = (int)round(ratio / (ratio - 1.0));
+        }
+    }
+
+    __atomic_store_n(&g_audio.correct_after_x_frames, correction, __ATOMIC_RELEASE);
+}
+
+static void reset_sync_buffers(void) {
+    age_buffer_clear(&g_age_mini);
+    age_buffer_clear(&g_age_short);
+    age_buffer_clear(&g_age_long);
+    g_median_long = 0;
+    g_median_short = 0;
+    g_hard_sync = 1;
+    __atomic_store_n(&g_audio.correct_after_x_frames, 0, __ATOMIC_RELEASE);
+}
+
 static void handle_wire_chunk(const char *payload, uint32_t size) {
     if (size < 12) return;
 
     /* Wire chunk body: timestamp.sec(4) + timestamp.usec(4) + size(4) + data */
+    int32_t ts_sec, ts_usec;
     uint32_t chunk_size;
+    memcpy(&ts_sec,     payload,     sizeof(int32_t));
+    memcpy(&ts_usec,    payload + 4, sizeof(int32_t));
     memcpy(&chunk_size, payload + 8, sizeof(uint32_t));
     if (chunk_size > size - 12) return;
 
     const char *pcm_data = payload + 12;
 
-    /* Log first chunk size to verify expected value (3840 B @ 48kHz/20ms) */
     static int first_chunk_logged = 0;
     if (!first_chunk_logged) {
         main_log("[main] first wire_chunk: chunk_size=%u (expected 3840 @ 48kHz/20ms)\n",
@@ -182,7 +250,126 @@ static void handle_wire_chunk(const char *payload, uint32_t size) {
     }
 
     pcm_dump_write(pcm_data, (int)chunk_size);
+
+    /* If time sync hasn't converged yet, fall back to simple buffering */
+    if (!time_sync_valid(&g_time_sync)) {
+        audio_write(&g_audio, pcm_data, chunk_size);
+        return;
+    }
+
+    /* Compute chunk age: how late (+) or early (-) this chunk is.
+       age = serverNow - chunkTimestamp - effectiveBuffer + ringFillTime
+       The ring fill time approximates the DAC-to-ear delay in the ring buffer. */
+    int64_t chunk_ts_usec  = (int64_t)ts_sec * 1000000 + ts_usec;
+    int64_t server_now     = time_sync_server_now_usec(&g_time_sync);
+    int effective_buf_ms   = g_state.buffer_ms - g_state.config.latency_ms;
+    int64_t ring_fill_usec = 0;
+    if (g_audio.bytes_per_frame > 0 && g_audio.sample_rate > 0) {
+        int readable = audio_available(&g_audio);
+        ring_fill_usec = (int64_t)readable * 1000000
+                         / ((int64_t)g_audio.sample_rate * g_audio.bytes_per_frame);
+    }
+
+    int64_t age_usec = server_now - chunk_ts_usec
+                       - (int64_t)effective_buf_ms * 1000
+                       + ring_fill_usec;
+
+    if (g_hard_sync) {
+        /* Hard sync mode: align playback to the correct time */
+        int64_t chunk_dur_usec = 0;
+        if (g_audio.sample_rate > 0 && g_audio.bytes_per_frame > 0)
+            chunk_dur_usec = (int64_t)chunk_size * 1000000
+                             / ((int64_t)g_audio.sample_rate * g_audio.bytes_per_frame);
+
+        if (age_usec > 0) {
+            /* Chunk is too old: drop it entirely */
+            return;
+        }
+        if (age_usec < -(chunk_dur_usec + 5000)) {
+            /* Chunk is very early: buffer it and output silence later */
+            audio_write(&g_audio, pcm_data, chunk_size);
+            return;
+        }
+
+        /* Age is close to 0: we're aligned. Write and exit hard sync. */
+        audio_write(&g_audio, pcm_data, chunk_size);
+        g_hard_sync = 0;
+        age_buffer_clear(&g_age_mini);
+        age_buffer_clear(&g_age_short);
+        age_buffer_clear(&g_age_long);
+        main_log("[sync] hard sync complete, age=%lld us\n", (long long)age_usec);
+        return;
+    }
+
+    /* Normal mode: write data and track age for soft sync */
     audio_write(&g_audio, pcm_data, chunk_size);
+
+    age_buffer_add(&g_age_mini, age_usec);
+    age_buffer_add(&g_age_short, age_usec);
+    age_buffer_add(&g_age_long, age_usec);
+
+    /* Check for immediate hard sync on extreme age */
+    int64_t abs_age = age_usec < 0 ? -age_usec : age_usec;
+    if (abs_age > 500000) {
+        main_log("[sync] hard sync: |age|=%lld us > 500ms\n", (long long)abs_age);
+        audio_flush(&g_audio);
+        reset_sync_buffers();
+        return;
+    }
+
+    /* Update medians and check hard/soft sync once per second (~50 chunks) */
+    static int median_counter = 0;
+    if (++median_counter >= 50) {
+        median_counter = 0;
+
+        if (age_buffer_full(&g_age_short))
+            g_median_short = age_buffer_median(&g_age_short);
+        if (age_buffer_full(&g_age_long))
+            g_median_long = age_buffer_median(&g_age_long);
+
+        /* Check median-based hard sync triggers */
+        int need_hard = 0;
+        if (age_buffer_full(&g_age_long)) {
+            int64_t abs_med = g_median_long < 0 ? -g_median_long : g_median_long;
+            if (abs_med > 2000 && abs_age > 500) {
+                main_log("[sync] hard sync: long median=%lld us\n",
+                         (long long)g_median_long);
+                need_hard = 1;
+            }
+        }
+        if (!need_hard && age_buffer_full(&g_age_short)) {
+            int64_t abs_med = g_median_short < 0 ? -g_median_short : g_median_short;
+            if (abs_med > 5000 && abs_age > 500) {
+                main_log("[sync] hard sync: short median=%lld us\n",
+                         (long long)g_median_short);
+                need_hard = 1;
+            }
+        }
+        if (!need_hard && age_buffer_full(&g_age_mini)) {
+            int64_t mini_med = age_buffer_median(&g_age_mini);
+            int64_t abs_med = mini_med < 0 ? -mini_med : mini_med;
+            if (abs_med > 50000 && abs_age > 500) {
+                main_log("[sync] hard sync: mini median=%lld us\n",
+                         (long long)mini_med);
+                need_hard = 1;
+            }
+        }
+
+        if (need_hard) {
+            audio_flush(&g_audio);
+            reset_sync_buffers();
+            return;
+        }
+
+        /* Drive soft sync based on median age */
+        compute_soft_sync(g_audio.sample_rate > 0 ? g_audio.sample_rate : 48000);
+
+        main_log("[sync] age=%lld  short=%lld  long=%lld  corr=%d\n",
+                 (long long)age_usec,
+                 (long long)g_median_short,
+                 (long long)g_median_long,
+                 __atomic_load_n(&g_audio.correct_after_x_frames, __ATOMIC_ACQUIRE));
+    }
 }
 
 static int stream_thread_func(SceSize args, void *argp) {
@@ -236,6 +423,7 @@ static int stream_thread_func(SceSize args, void *argp) {
                          state->bits, state->buffer_ms);
                 pcm_dump_init();
                 audio_flush(&g_audio);
+                reset_sync_buffers();
                 audio_configure(&g_audio,
                     state->sample_rate  > 0 ? state->sample_rate  : 48000,
                     state->channels     > 0 ? state->channels     : 2,
@@ -250,6 +438,15 @@ static int stream_thread_func(SceSize args, void *argp) {
                 break;
 
             case MSG_TIME:
+                if (hdr.size >= 8) {
+                    int32_t lat_sec, lat_usec;
+                    memcpy(&lat_sec,  payload,     sizeof(int32_t));
+                    memcpy(&lat_usec, payload + 4, sizeof(int32_t));
+                    int64_t c2s = (int64_t)lat_sec * 1000000 + lat_usec;
+                    int64_t s2c = ((int64_t)hdr.received_sec - hdr.sent_sec) * 1000000
+                                + (hdr.received_usec - hdr.sent_usec);
+                    time_sync_update(&g_time_sync, c2s, s2c);
+                }
                 break;
 
             case MSG_ERROR:
@@ -270,9 +467,12 @@ static int stream_thread_func(SceSize args, void *argp) {
 
         free(payload);
 
-        /* Periodically send time sync */
+        /* Send time sync: every message during initial convergence,
+           then every 50 messages (~1s) in steady state. */
         time_counter++;
-        if (time_counter >= 50) {
+        int sync_interval = time_sync_valid(&g_time_sync)
+                            && g_time_sync.count >= 50 ? 50 : 1;
+        if (time_counter >= sync_interval) {
             net_send_time(net);
             time_counter = 0;
         }
@@ -433,6 +633,8 @@ static void do_connect(AppState *state, NetContext *net) {
     g_state.bits = 0;
     g_state.channels = 0;
     audio_flush(&g_audio);
+    time_sync_init(&g_time_sync);
+    reset_sync_buffers();
 
     if (net_control_connect(net, state->config.server_ip, state->config.control_port) < 0) {
         strncpy(state->conn_error, "Failed to connect (control)", MAX_STR_LEN - 1);
@@ -492,6 +694,11 @@ int main(void) {
     if (audio_init(&g_audio) < 0) {
         strncpy(g_state.conn_error, "Audio init failed", MAX_STR_LEN - 1);
     }
+
+    time_sync_init(&g_time_sync);
+    age_buffer_init(&g_age_mini,  AGE_BUFFER_MINI);
+    age_buffer_init(&g_age_short, AGE_BUFFER_SHORT);
+    age_buffer_init(&g_age_long,  AGE_BUFFER_LONG);
 
     if (gui_init() < 0) {
         sceKernelExitProcess(0);
@@ -586,6 +793,9 @@ int main(void) {
     config_save(&g_state.config);
     do_disconnect(&g_state, &g_net);
     audio_fini(&g_audio);
+    age_buffer_free(&g_age_mini);
+    age_buffer_free(&g_age_short);
+    age_buffer_free(&g_age_long);
     gui_fini();
     net_fini();
 

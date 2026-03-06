@@ -735,3 +735,245 @@ events:
       variable: "run_result_unused"
       cached: true
 ...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_c93d0/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_c93d0.dir/build.make CMakeFiles/cmTC_c93d0.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_c93d0.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_c93d0.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        /home/robin/git/snapcast-vita/vita/arch.c:27:6: Fehler: #error cmake_ARCH x86_64
+           27 |     #error cmake_ARCH x86_64
+              |      ^~~~~
+        /home/robin/git/snapcast-vita/vita/arch.c:40:2: Fehler: #error cmake_ARCH unknown
+           40 | #error cmake_ARCH unknown
+              |  ^~~~~
+        gmake[1]: *** [CMakeFiles/cmTC_c93d0.dir/build.make:81: CMakeFiles/cmTC_c93d0.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_c93d0/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_1b2c0/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_1b2c0.dir/build.make CMakeFiles/cmTC_1b2c0.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_1b2c0.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_1b2c0.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        /home/robin/git/snapcast-vita/vita/arch.c:27:6: Fehler: #error cmake_ARCH x86_64
+           27 |     #error cmake_ARCH x86_64
+              |      ^~~~~
+        /home/robin/git/snapcast-vita/vita/arch.c:40:2: Fehler: #error cmake_ARCH unknown
+           40 | #error cmake_ARCH unknown
+              |  ^~~~~
+        gmake[1]: *** [CMakeFiles/cmTC_1b2c0.dir/build.make:81: CMakeFiles/cmTC_1b2c0.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_1b2c0/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_fba65/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_fba65.dir/build.make CMakeFiles/cmTC_fba65.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_fba65.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_fba65.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        /home/robin/git/snapcast-vita/vita/arch.c:27:6: Fehler: #error cmake_ARCH x86_64
+           27 |     #error cmake_ARCH x86_64
+              |      ^~~~~
+        /home/robin/git/snapcast-vita/vita/arch.c:40:2: Fehler: #error cmake_ARCH unknown
+           40 | #error cmake_ARCH unknown
+              |  ^~~~~
+        gmake[1]: *** [CMakeFiles/cmTC_fba65.dir/build.make:81: CMakeFiles/cmTC_fba65.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_fba65/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_c6ee3/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_c6ee3.dir/build.make CMakeFiles/cmTC_c6ee3.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_c6ee3.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_c6ee3.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        /home/robin/git/snapcast-vita/vita/arch.c:27:6: Fehler: #error cmake_ARCH x86_64
+           27 |     #error cmake_ARCH x86_64
+              |      ^~~~~
+        /home/robin/git/snapcast-vita/vita/arch.c:40:2: Fehler: #error cmake_ARCH unknown
+           40 | #error cmake_ARCH unknown
+              |  ^~~~~
+        gmake[1]: *** [CMakeFiles/cmTC_c6ee3.dir/build.make:81: CMakeFiles/cmTC_c6ee3.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_c6ee3/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_3706f/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_3706f.dir/build.make CMakeFiles/cmTC_3706f.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_3706f.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_3706f.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        ccache: error: failed to create temporary file for /run/user/1000/ccache-tmp/cpp_stdout.tmp.bb02Tg.i: Permission denied
+        gmake[1]: *** [CMakeFiles/cmTC_3706f.dir/build.make:81: CMakeFiles/cmTC_3706f.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_3706f/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...
+
+---
+events:
+  -
+    kind: "try_run-v1"
+    backtrace:
+      - "cmake/TargetArch.cmake:112 (try_run)"
+      - "CMakeLists.txt:171 (target_architecture)"
+    directories:
+      source: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+      binary: "/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp"
+    cmakeVariables:
+      CMAKE_C_FLAGS: ""
+      CMAKE_C_FLAGS_DEBUG: "-g"
+      CMAKE_EXE_LINKER_FLAGS: ""
+      CMAKE_MODULE_PATH: "/home/robin/git/snapcast-vita/cmake/"
+    buildResult:
+      variable: "compile_result_unused"
+      cached: true
+      stdout: |
+        Change Dir: '/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp'
+        
+        Run Build Command(s): /usr/bin/cmake -E env VERBOSE=1 /usr/bin/gmake -f Makefile cmTC_be4df/fast
+        /usr/bin/gmake  -f CMakeFiles/cmTC_be4df.dir/build.make CMakeFiles/cmTC_be4df.dir/build
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird betreten
+        Building C object CMakeFiles/cmTC_be4df.dir/arch.c.o
+        /usr/lib64/ccache/cc    -o CMakeFiles/cmTC_be4df.dir/arch.c.o -c /home/robin/git/snapcast-vita/vita/arch.c
+        ccache: error: failed to create temporary file for /run/user/1000/ccache-tmp/cpp_stdout.tmp.IRGAmA.i: Permission denied
+        gmake[1]: *** [CMakeFiles/cmTC_be4df.dir/build.make:81: CMakeFiles/cmTC_be4df.dir/arch.c.o] Fehler 1
+        gmake[1]: Verzeichnis „/home/robin/git/snapcast-vita/vita/CMakeFiles/CMakeTmp“ wird verlassen
+        gmake: *** [Makefile:134: cmTC_be4df/fast] Fehler 2
+        
+      exitCode: 2
+    runResult:
+      variable: "run_result_unused"
+      cached: true
+...

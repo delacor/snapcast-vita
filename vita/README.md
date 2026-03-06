@@ -31,7 +31,9 @@ A full-featured Snapcast client for the PlayStation Vita with a native GUI.
 
 ## Prerequisites
 
-Install the [Vita SDK](https://vitasdk.org/):
+You need the [Vita SDK](https://vitasdk.org/) installed. If CMake reports that it could not find the toolchain file, the SDK is either not installed or `VITASDK` points to the wrong path.
+
+**Install the SDK** (e.g. into `/usr/local/vitasdk`):
 
 ```bash
 export VITASDK=/usr/local/vitasdk
@@ -43,16 +45,31 @@ cd vdpm
 ./install-all.sh
 ```
 
+**If you installed the SDK elsewhere**, set `VITASDK` to that path before building, e.g.:
+
+```bash
+export VITASDK=$HOME/vitasdk
+export PATH=$VITASDK/bin:$PATH
+```
+
 ## Building
+
+From the `vita` directory, configure with an explicit build directory so the Makefile is created in `build/`:
 
 ```bash
 cd vita
-mkdir build && cd build
-cmake ..
+cmake -S . -B build
+cd build && make
+```
+
+Alternatively, if you already ran `cmake ..` from `build/`, the Vita SDK scripts place the Makefile in the parent directory—run **`make` from `vita/`** (one level up from `build/`):
+
+```bash
+cd vita
 make
 ```
 
-This produces `snapcast_vita.vpk` which can be installed on a hacked PS Vita.
+This produces `snapcast_vita.vpk` in the build tree, which can be installed on a hacked PS Vita.
 
 ## Installing
 
