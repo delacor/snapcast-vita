@@ -184,7 +184,16 @@ static void pcm_dump_write(const void *data, int size) {
 }
 
 /* Compute the effective sample rate correction and set it on the audio context.
-   Mirrors the C++ client's Stream::setRealSampleRate + soft sync logic. */
+ *
+ * Rate formula: rate = |short_med_µs| / 5_000_000
+ *   → targets ~5 second recovery for any drift magnitude.
+ *   → capped at 6% (aggressive; may be audible on some content).
+ *
+ * Examples:
+ *   300 ms drift → rate 6.0%  → drop/dup 1/17 frames   → recovered in ~5 s
+ *   100 ms drift → rate 2.0%  → drop/dup 1/50 frames   → recovered in ~5 s
+ *    50 ms drift → rate 1.0%  → drop/dup 1/100 frames  → recovered in ~5 s
+ *     5 ms drift → rate 0.1%  → nearly imperceptible correction */
 static void compute_soft_sync(int sample_rate) {
     if (!age_buffer_full(&g_age_short)) {
         __atomic_store_n(&g_audio.correct_after_x_frames, 0, __ATOMIC_RELEASE);
@@ -195,31 +204,22 @@ static void compute_soft_sync(int sample_rate) {
     int64_t short_med = g_median_short;
     int correction = 0;
 
-    if (short_med > SOFT_SYNC_BEGIN_USEC &&
-        mini_med > 50 &&
-        short_med > 50)
-    {
-        /* We are behind (positive age): speed up by dropping frames */
-        double rate = ((double)short_med / 100.0) * 0.00005;
-        if (rate > 0.0005) rate = 0.0005;
+    if (short_med > SOFT_SYNC_BEGIN_USEC && mini_med > 500) {
+        /* Behind (positive age, ring over-full): speed up by dropping frames */
+        double rate = (double)short_med / 5000000.0;
+        if (rate > 0.06) rate = 0.06;
         double real_rate = (double)sample_rate * (1.0 - rate);
-        if (real_rate != (double)sample_rate) {
-            double ratio = (double)sample_rate / real_rate;
-            correction = (int)round(ratio / (ratio - 1.0));
-        }
+        double ratio = (double)sample_rate / real_rate;
+        correction = (int)round(ratio / (ratio - 1.0));
     }
-    else if (short_med < -SOFT_SYNC_BEGIN_USEC &&
-             mini_med < -50 &&
-             short_med < -50)
-    {
-        /* We are ahead (negative age): slow down by duplicating frames */
-        double rate = ((double)(-short_med) / 100.0) * 0.00005;
-        if (rate > 0.0005) rate = 0.0005;
+    else if (short_med < -SOFT_SYNC_BEGIN_USEC && mini_med < -500) {
+        /* Ahead (negative age, ring under-full): slow down by duplicating frames.
+         * real_rate > sample_rate → ratio < 1 → ratio/(ratio-1) is negative → correction < 0 ✓ */
+        double rate = (double)(-short_med) / 5000000.0;
+        if (rate > 0.06) rate = 0.06;
         double real_rate = (double)sample_rate * (1.0 + rate);
-        if (real_rate != (double)sample_rate) {
-            double ratio = (double)sample_rate / real_rate;
-            correction = (int)round(ratio / (ratio - 1.0));
-        }
+        double ratio = (double)sample_rate / real_rate;
+        correction = (int)round(ratio / (ratio - 1.0));
     }
 
     __atomic_store_n(&g_audio.correct_after_x_frames, correction, __ATOMIC_RELEASE);
