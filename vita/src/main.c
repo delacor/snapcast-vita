@@ -21,7 +21,6 @@
 #include <psp2/ctrl.h>
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
-#include <psp2/registrymgr.h>
 
 static void main_log(const char *fmt, ...) {
     /* Ensure directory exists (Vita may not create it automatically) */
@@ -760,10 +759,6 @@ int main(void) {
     scePowerSetGpuClockFrequency(222);
     scePowerSetGpuXbarClockFrequency(166);
 
-    int saved_suspend_interval = 5;
-    sceRegMgrGetKeyInt("/CONFIG/POWER_SAVING", "suspend_interval", &saved_suspend_interval);
-    sceRegMgrSetKeyInt("/CONFIG/POWER_SAVING", "suspend_interval", 0);
-
     sceSysmoduleLoadModule(SCE_SYSMODULE_NET);
     sceSysmoduleLoadModule(SCE_SYSMODULE_IME);
 
@@ -880,6 +875,9 @@ int main(void) {
             }
         }
 
+        /* Reset the idle/suspend timer so the Vita never auto-suspends */
+        sceKernelPowerTick(0);
+
         /* Render */
         gui_draw(&g_state, &g_audio);
 
@@ -892,7 +890,6 @@ int main(void) {
     }
 
     /* Cleanup */
-    sceRegMgrSetKeyInt("/CONFIG/POWER_SAVING", "suspend_interval", saved_suspend_interval);
     config_save(&g_state.config);
     do_disconnect(&g_state, &g_net);
     audio_fini(&g_audio);
