@@ -185,37 +185,39 @@ static void pcm_dump_write(const void *data, int size) {
 
 /* Compute the effective sample rate correction and set it on the audio context.
  *
- * Rate formula: rate = |short_med_µs| / 5_000_000
- *   → targets ~5 second recovery for any drift magnitude.
+ * Rate formula: rate = |short_med_µs| / 2_000_000
+ *   → targets ~2 second recovery for any drift magnitude.
  *   → capped at 6% (aggressive; may be audible on some content).
+ *   → correction gated only on short_med (2 s median); mini_med is NOT used
+ *     as a gate because it flips during active correction (ring draining) and
+ *     was causing oscillation (correction stop/start every few seconds).
  *
  * Examples:
- *   300 ms drift → rate 6.0%  → drop/dup 1/17 frames   → recovered in ~5 s
- *   100 ms drift → rate 2.0%  → drop/dup 1/50 frames   → recovered in ~5 s
- *    50 ms drift → rate 1.0%  → drop/dup 1/100 frames  → recovered in ~5 s
- *     5 ms drift → rate 0.1%  → nearly imperceptible correction */
+ *   300 ms drift → rate 6.0%  → ~30 frames/grain dropped → recovered in ~2 s
+ *   100 ms drift → rate 5.0%  → ~25 frames/grain dropped → recovered in ~2 s
+ *    50 ms drift → rate 2.5%  → ~13 frames/grain dropped → recovered in ~2 s
+ *     5 ms drift → rate 0.25% → ~1 frame/grain dropped   → recovered in ~2 s */
 static void compute_soft_sync(int sample_rate) {
     if (!age_buffer_full(&g_age_short)) {
         __atomic_store_n(&g_audio.correct_after_x_frames, 0, __ATOMIC_RELEASE);
         return;
     }
 
-    int64_t mini_med  = age_buffer_median(&g_age_mini);
     int64_t short_med = g_median_short;
     int correction = 0;
 
-    if (short_med > SOFT_SYNC_BEGIN_USEC && mini_med > 500) {
+    if (short_med > SOFT_SYNC_BEGIN_USEC) {
         /* Behind (positive age, ring over-full): speed up by dropping frames */
-        double rate = (double)short_med / 5000000.0;
+        double rate = (double)short_med / 2000000.0;
         if (rate > 0.06) rate = 0.06;
         double real_rate = (double)sample_rate * (1.0 - rate);
         double ratio = (double)sample_rate / real_rate;
         correction = (int)round(ratio / (ratio - 1.0));
     }
-    else if (short_med < -SOFT_SYNC_BEGIN_USEC && mini_med < -500) {
+    else if (short_med < -SOFT_SYNC_BEGIN_USEC) {
         /* Ahead (negative age, ring under-full): slow down by duplicating frames.
          * real_rate > sample_rate → ratio < 1 → ratio/(ratio-1) is negative → correction < 0 ✓ */
-        double rate = (double)(-short_med) / 5000000.0;
+        double rate = (double)(-short_med) / 2000000.0;
         if (rate > 0.06) rate = 0.06;
         double real_rate = (double)sample_rate * (1.0 + rate);
         double ratio = (double)sample_rate / real_rate;
@@ -704,6 +706,62 @@ static void identify_self(AppState *state) {
     }
 }
 
+/* --- Network profile helpers --- */
+
+/* Extract the /24 prefix (first 3 octets) of the Vita's current IP into out. */
+static int get_net_prefix(char *out, size_t sz) {
+    SceNetCtlInfo info;
+    if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) < 0)
+        return -1;
+    const char *last_dot = strrchr(info.ip_address, '.');
+    if (!last_dot) return -1;
+    int prefix_len = (int)(last_dot - info.ip_address);
+    if ((size_t)prefix_len >= sz) return -1;
+    memcpy(out, info.ip_address, prefix_len);
+    out[prefix_len] = '\0';
+    return 0;
+}
+
+/* If a saved profile exists for the current /24 network, copy its server IP
+ * into cfg->server_ip so the correct default is shown and used on startup. */
+static void apply_network_profile(AppConfig *cfg) {
+    char prefix[MAX_IP_LEN] = "";
+    if (get_net_prefix(prefix, sizeof(prefix)) < 0) return;
+    for (int i = 0; i < cfg->net_profile_count; i++) {
+        if (strcmp(cfg->net_profiles[i].net_prefix, prefix) == 0) {
+            strncpy(cfg->server_ip, cfg->net_profiles[i].server_ip,
+                    MAX_IP_LEN - 1);
+            main_log("[config] network profile match for %s -> %s\n",
+                     prefix, cfg->server_ip);
+            return;
+        }
+    }
+}
+
+/* Save (or update) the server IP used for the current /24 network. */
+static void update_network_profile(AppConfig *cfg) {
+    char prefix[MAX_IP_LEN] = "";
+    if (get_net_prefix(prefix, sizeof(prefix)) < 0) return;
+    for (int i = 0; i < cfg->net_profile_count; i++) {
+        if (strcmp(cfg->net_profiles[i].net_prefix, prefix) == 0) {
+            snprintf(cfg->net_profiles[i].server_ip, MAX_IP_LEN,
+                     "%s", cfg->server_ip);
+            main_log("[config] network profile updated for %s: %s\n",
+                     prefix, cfg->server_ip);
+            return;
+        }
+    }
+    if (cfg->net_profile_count < MAX_NET_PROFILES) {
+        snprintf(cfg->net_profiles[cfg->net_profile_count].net_prefix,
+                 MAX_IP_LEN, "%s", prefix);
+        snprintf(cfg->net_profiles[cfg->net_profile_count].server_ip,
+                 MAX_IP_LEN, "%s", cfg->server_ip);
+        cfg->net_profile_count++;
+        main_log("[config] network profile added for %s: %s\n",
+                 prefix, cfg->server_ip);
+    }
+}
+
 /* --- Connection management --- */
 
 static void cleanup_connection(NetContext *net) {
@@ -776,14 +834,22 @@ int main(void) {
     if (net_init() < 0) {
         strncpy(g_state.conn_error, "Network init failed", MAX_STR_LEN - 1);
         g_state.conn_state = CONN_ERROR;
-    } else if (config_existed < 0) {
-        SceNetCtlInfo info;
-        if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) >= 0) {
-            char *last_dot = strrchr(info.ip_address, '.');
-            if (last_dot) {
-                int prefix_len = (int)(last_dot - info.ip_address);
-                snprintf(g_state.config.server_ip, MAX_IP_LEN,
-                         "%.*s.100", prefix_len, info.ip_address);
+    } else {
+        /* Apply saved /24 network profile if one matches the current network.
+         * This overrides the generic server_ip with the network-specific one. */
+        apply_network_profile(&g_state.config);
+
+        if (config_existed < 0) {
+            /* No config file yet: profile list is empty, so fall back to
+             * guessing .100 on the current /24 as the initial server IP. */
+            SceNetCtlInfo info;
+            if (sceNetCtlInetGetInfo(SCE_NETCTL_INFO_GET_IP_ADDRESS, &info) >= 0) {
+                char *last_dot = strrchr(info.ip_address, '.');
+                if (last_dot) {
+                    int prefix_len = (int)(last_dot - info.ip_address);
+                    snprintf(g_state.config.server_ip, MAX_IP_LEN,
+                             "%.*s.100", prefix_len, info.ip_address);
+                }
             }
         }
     }
@@ -816,6 +882,10 @@ int main(void) {
         /* Handle connection state transitions */
         if (g_state.conn_state == CONN_CONNECTING) {
             do_connect(&g_state, &g_net);
+            if (g_state.conn_state == CONN_CONNECTED) {
+                update_network_profile(&g_state.config);
+                config_save(&g_state.config);
+            }
         }
 
         /* Poll JSON-RPC */
@@ -870,6 +940,8 @@ int main(void) {
                 do_connect(&g_state, &g_net);
                 if (g_state.conn_state == CONN_CONNECTED) {
                     g_state.reconnect_attempts = 0;
+                    update_network_profile(&g_state.config);
+                    config_save(&g_state.config);
                     main_log("[main] reconnected successfully\n");
                 }
             }

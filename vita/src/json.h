@@ -32,11 +32,13 @@ int         json_array_size(JsonNode *arr);
 JsonNode   *json_array_get(JsonNode *arr, int index);
 
 JsonNode *json_new_object(void);
+JsonNode *json_new_array(void);
 JsonNode *json_new_string(const char *val);
 JsonNode *json_new_int(int val);
 JsonNode *json_new_number(double val);
 JsonNode *json_new_bool(int val);
 void      json_object_add(JsonNode *obj, const char *key, JsonNode *val);
+void      json_array_add(JsonNode *arr, JsonNode *val);
 
 char *json_serialize(JsonNode *node);
 

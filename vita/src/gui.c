@@ -1,4 +1,5 @@
 #include "gui.h"
+#include "config.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -735,9 +736,13 @@ int gui_ime_update(AppState *state, NetContext *net) {
                         memset(state->config.server_ip, 0, MAX_IP_LEN);
                         memcpy(state->config.server_ip, text,
                                strlen(text) < MAX_IP_LEN - 1 ? strlen(text) : MAX_IP_LEN - 1);
+                        config_save(&state->config);
                     } else if (ime_field_id == 1) {
                         int p = atoi(text);
-                        if (p > 0 && p < 65536) state->config.stream_port = p;
+                        if (p > 0 && p < 65536) {
+                            state->config.stream_port = p;
+                            config_save(&state->config);
+                        }
                     }
                     break;
                 case SCREEN_SETTINGS:

@@ -234,6 +234,20 @@ JsonNode *json_array_get(JsonNode *arr, int index) {
 
 JsonNode *json_new_object(void) { return new_node(JSON_OBJECT); }
 
+JsonNode *json_new_array(void) { return new_node(JSON_ARRAY); }
+
+void json_array_add(JsonNode *arr, JsonNode *val) {
+    if (!arr || arr->type != JSON_ARRAY || !val) return;
+    val->next = NULL;
+    if (!arr->child) {
+        arr->child = val;
+    } else {
+        JsonNode *tail = arr->child;
+        while (tail->next) tail = tail->next;
+        tail->next = val;
+    }
+}
+
 JsonNode *json_new_string(const char *val) {
     JsonNode *n = new_node(JSON_STRING);
     n->str_val = val ? strdup(val) : strdup("");

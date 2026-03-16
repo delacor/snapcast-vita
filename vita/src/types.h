@@ -11,6 +11,7 @@
 #define MAX_IP_LEN      48
 #define MAX_STR_LEN     256
 #define MAX_URL_LEN     512
+#define MAX_NET_PROFILES 8
 
 #define SNAP_STREAM_PORT   1704
 #define SNAP_CONTROL_PORT  1705
@@ -93,12 +94,20 @@ typedef struct {
     char version[MAX_NAME_LEN];
 } SnapServer;
 
+/* Per-/24-network server IP memory */
+typedef struct {
+    char net_prefix[MAX_IP_LEN]; /* e.g. "192.168.1" */
+    char server_ip[MAX_IP_LEN];  /* server IP saved for that network */
+} NetProfile;
+
 typedef struct {
     char server_ip[MAX_IP_LEN];
     int stream_port;
     int control_port;
     char client_name[MAX_NAME_LEN];
     int latency_ms;
+    NetProfile net_profiles[MAX_NET_PROFILES];
+    int net_profile_count;
 } AppConfig;
 
 typedef enum {

@@ -142,7 +142,8 @@ static int audio_thread(SceSize args, void *argp) {
     int bpf = ctx->channels * (ctx->bits / 8);
     int frame_bytes = AUDIO_GRAIN * bpf;
 
-    #define MAX_FRAME_CORRECTION 4
+    /* Must be >= ceil(0.06 * AUDIO_GRAIN) = 31 to realise the full 6% cap */
+    #define MAX_FRAME_CORRECTION 32
     void *buf = malloc(frame_bytes + MAX_FRAME_CORRECTION * bpf);
     void *out_buf = malloc(frame_bytes);
     if (!buf || !out_buf) { free(buf); free(out_buf); return -1; }
