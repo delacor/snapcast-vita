@@ -6,6 +6,25 @@
 #include <psp2/io/fcntl.h>
 #include <psp2/io/stat.h>
 
+/* Owned by the UI thread. Compare meaningful settings, not struct padding or
+ * unused profile slots, before touching storage. */
+static AppConfig saved_config;
+static int saved_config_valid;
+
+static int config_equal(const AppConfig *a, const AppConfig *b) {
+    if (strcmp(a->server_ip, b->server_ip) ||
+        strcmp(a->client_name, b->client_name) ||
+        a->stream_port != b->stream_port || a->control_port != b->control_port ||
+        a->latency_ms != b->latency_ms || a->net_profile_count != b->net_profile_count)
+        return 0;
+    for (int i = 0; i < a->net_profile_count; ++i) {
+        if (strcmp(a->net_profiles[i].net_prefix, b->net_profiles[i].net_prefix) ||
+            strcmp(a->net_profiles[i].server_ip, b->net_profiles[i].server_ip))
+            return 0;
+    }
+    return 1;
+}
+
 void config_default(AppConfig *cfg) {
     memset(cfg, 0, sizeof(*cfg));
     strncpy(cfg->server_ip, "192.168.1.100", MAX_IP_LEN - 1);
@@ -17,6 +36,7 @@ void config_default(AppConfig *cfg) {
 }
 
 int config_load(AppConfig *cfg) {
+    saved_config_valid = 0;
     config_default(cfg);
 
     SceUID fd = sceIoOpen(CONFIG_FILE, SCE_O_RDONLY, 0);
@@ -30,6 +50,7 @@ int config_load(AppConfig *cfg) {
 
     JsonNode *root = json_parse(buf);
     if (!root) return -1;
+    if (root->type != JSON_OBJECT) { json_free(root); return -1; }
 
     const char *ip = json_get_string(root, "server_ip", NULL);
     if (ip) strncpy(cfg->server_ip, ip, MAX_IP_LEN - 1);
@@ -63,11 +84,16 @@ int config_load(AppConfig *cfg) {
     }
 
     json_free(root);
+    saved_config = *cfg;
+    saved_config_valid = 1;
     return 0;
 }
 
 int config_save(const AppConfig *cfg) {
-    sceIoMkdir(CONFIG_DIR, 0777);
+    if (cfg->net_profile_count < 0 || cfg->net_profile_count > MAX_NET_PROFILES) return -1;
+    if (saved_config_valid && config_equal(cfg, &saved_config)) return 0;
+    AppConfig snapshot = *cfg;
+    cfg = &snapshot;
 
     JsonNode *root = json_new_object();
     json_object_add(root, "server_ip",    json_new_string(cfg->server_ip));
@@ -91,11 +117,22 @@ int config_save(const AppConfig *cfg) {
     json_free(root);
     if (!json_str) return -1;
 
+    sceIoMkdir(CONFIG_DIR, 0777);
     SceUID fd = sceIoOpen(CONFIG_FILE, SCE_O_WRONLY | SCE_O_CREAT | SCE_O_TRUNC, 0777);
     if (fd < 0) { free(json_str); return -1; }
 
-    sceIoWrite(fd, json_str, strlen(json_str));
-    sceIoClose(fd);
+    /* A truncated or failed write must never be cached as a successful save. */
+    saved_config_valid = 0;
+    size_t length = strlen(json_str), written = 0;
+    while (written < length) {
+        SceSSize result = sceIoWrite(fd, json_str + written, length - written);
+        if (result <= 0) break;
+        written += (size_t)result;
+    }
+    int close_result = sceIoClose(fd);
     free(json_str);
+    if (written != length || close_result < 0) return -1;
+    saved_config = snapshot;
+    saved_config_valid = 1;
     return 0;
 }

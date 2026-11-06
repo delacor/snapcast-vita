@@ -21,6 +21,9 @@ endif()
 project(snapcast_vita C)
 include("${VITASDK}/share/vita.cmake" REQUIRED)
 
+option(SNAPVITA_FILE_LOGGING "Write diagnostic logs to ux0:data/snapcast" OFF)
+option(SNAPVITA_AUDIO_DUMP "Write a short PCM dump for troubleshooting" OFF)
+
 set(VITA_APP_NAME "Snapcast")
 set(VITA_TITLEID  "SNAP00001")
 set(VITA_VERSION  "01.00")
@@ -36,6 +39,11 @@ add_executable(${PROJECT_NAME}
   src/audio.c
   src/gui.c
   src/time_sync.c
+)
+
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+  SNAPVITA_FILE_LOGGING=$<BOOL:${SNAPVITA_FILE_LOGGING}>
+  SNAPVITA_AUDIO_DUMP=$<BOOL:${SNAPVITA_AUDIO_DUMP}>
 )
 
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -78,5 +86,6 @@ vita_create_self(${PROJECT_NAME}.self ${PROJECT_NAME})
 vita_create_vpk(${PROJECT_NAME}.vpk ${VITA_TITLEID} ${PROJECT_NAME}.self
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
+  FILE sce_sys/icon0.png sce_sys/icon0.png
   FILE sce_sys/livearea/contents/template.xml sce_sys/livearea/contents/template.xml
 )

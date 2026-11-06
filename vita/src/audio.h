@@ -6,10 +6,11 @@
 /*
  * Ring buffer sizing:
  * 48000 Hz * 2 ch * 2 bytes = 192000 bytes/sec
- * We allocate enough for ~2 seconds at 48kHz stereo 16-bit.
+ * Five seconds at the largest supported format, plus a maximum wire chunk.
  * Must be a power of two so we can use bitwise masking for wrap-around.
  */
-#define AUDIO_RING_SIZE  (512 * 1024)   /* 512 KB ≈ 2.7s @ 48kHz/stereo/16bit */
+#define AUDIO_MAX_CHUNK_SIZE (1024 * 1024)
+#define AUDIO_RING_SIZE  (2 * AUDIO_MAX_CHUNK_SIZE)
 
 /*
  * Grain: samples per sceAudioOutOutput call.
@@ -29,20 +30,22 @@ typedef struct {
     int bits;           /* bits per sample (16)      */
     int bytes_per_frame;/* channels * (bits/8)       */
 
-    /* Preroll: minimum bytes before we allow the thread to output audio */
-    int preroll_bytes;
-    int prerolled;       /* 1 once preroll_bytes have accumulated */
+    int buffer_ms;       /* effective delay, including format/capacity limits */
+    int prerolled;       /* audio thread has reached the scheduled start */
+    int scheduled;      /* publishes start_at_usec to the audio thread */
+    int needs_resync;    /* consumer underrun: hold silence until reset */
+    int64_t start_at_usec; /* local clock; immutable while scheduled */
 
     /* Playback thread */
     int thread_id;
     volatile int running;
+    int output_error;     /* audio thread publishes an output failure */
 
-    /* Lock-free ring buffer (single producer / single consumer).
-       Positions are signed int32, advanced monotonically; wrap handled
-       with masking against (AUDIO_RING_SIZE - 1). */
+    /* Single producer / single consumer. Unsigned subtraction handles wrap.
+       Only the consumer advances read_pos while running. */
     uint8_t ring[AUDIO_RING_SIZE];
-    volatile int write_pos;   /* written by stream thread  */
-    volatile int read_pos;    /* written by audio thread   */
+    uint32_t write_pos;       /* written by stream thread  */
+    uint32_t read_pos;        /* written by audio thread   */
 
     /* Volume (0..SCE_AUDIO_OUT_MAX_VOL) */
     int volume;
@@ -71,14 +74,19 @@ void audio_fini(AudioContext *ctx);
 int  audio_configure(AudioContext *ctx, int sample_rate, int channels, int bits,
                      int preroll_ms);
 
-void audio_start(AudioContext *ctx);
+/* Returns zero on success or a negative thread/port error. */
+int  audio_start(AudioContext *ctx);
 void audio_stop(AudioContext *ctx);
+/* Consumer must be stopped, and caller must own the producer. */
 void audio_flush(AudioContext *ctx);
+int  audio_buffer_ms(const AudioContext *ctx, int64_t requested_ms);
+/* Call once after queuing the first chunk following a flush. */
+void audio_schedule(AudioContext *ctx, int64_t local_start_usec);
 
 /*
  * Write PCM data from the streaming thread.
- * If the ring is nearly full, evicts the oldest data to make room so
- * latency stays bounded.  Returns the number of bytes written (always size).
+ * Accepts a whole, frame-aligned chunk or returns zero without changing the
+ * queue. The caller must resynchronize on overflow; no unread data is evicted.
  */
 int  audio_write(AudioContext *ctx, const void *data, int size);
 

@@ -1,21 +1,17 @@
 #include "time_sync.h"
 #include <string.h>
 #include <stdlib.h>
-#include <psp2/rtc.h>
+#include <psp2/kernel/processmgr.h>
 
-/* Base tick set once at app start so all relative values fit in int32_t */
+/* Use elapsed process time, independent of adjustments to the system RTC. */
 static int64_t g_tick_base = 0;
 
 void time_sync_tick_init(void) {
-    SceRtcTick tick;
-    sceRtcGetCurrentTick(&tick);
-    g_tick_base = (int64_t)tick.tick;
+    g_tick_base = (int64_t)sceKernelGetProcessTimeWide();
 }
 
 int64_t get_tick_usec(void) {
-    SceRtcTick tick;
-    sceRtcGetCurrentTick(&tick);
-    return (int64_t)tick.tick - g_tick_base;
+    return (int64_t)sceKernelGetProcessTimeWide() - g_tick_base;
 }
 
 static int cmp_int64(const void *a, const void *b) {
@@ -64,38 +60,42 @@ int time_sync_valid(const TimeSync *ts) {
     return ts->count > 0;
 }
 
-/* --- AgeBuffer --- */
+/* --- Time-bounded playback drift history --- */
 
-int age_buffer_init(AgeBuffer *ab, int capacity) {
-    memset(ab, 0, sizeof(*ab));
-    ab->buf = (int64_t *)calloc(capacity, sizeof(int64_t));
-    if (!ab->buf) return -1;
-    ab->capacity = capacity;
-    return 0;
+void sync_filter_reset(SyncFilter *filter) {
+    memset(filter, 0, sizeof(*filter));
+    filter->first_usec = filter->last_usec = -1;
 }
 
-void age_buffer_free(AgeBuffer *ab) {
-    free(ab->buf);
-    memset(ab, 0, sizeof(*ab));
+void sync_filter_add(SyncFilter *filter, int64_t now_usec, int64_t age_usec) {
+    if (filter->count && (now_usec < filter->last_usec ||
+                         now_usec - filter->last_usec > SYNC_WINDOW_USEC))
+        sync_filter_reset(filter);
+    if (filter->count && now_usec - filter->last_usec < SYNC_SAMPLE_USEC)
+        return;
+    if (!filter->count) filter->first_usec = now_usec;
+    filter->last_usec = now_usec;
+    filter->times[filter->write_idx] = now_usec;
+    filter->values[filter->write_idx] = age_usec;
+    filter->write_idx = (filter->write_idx + 1) % SYNC_FILTER_SIZE;
+    if (filter->count < SYNC_FILTER_SIZE) filter->count++;
 }
 
-void age_buffer_add(AgeBuffer *ab, int64_t value) {
-    if (!ab->buf) return;
-    ab->buf[ab->write_idx] = value;
-    ab->write_idx = (ab->write_idx + 1) % ab->capacity;
-    if (ab->count < ab->capacity)
-        ab->count++;
+int sync_filter_ready(const SyncFilter *filter, int64_t now_usec) {
+    return filter->count > 1 && now_usec >= filter->last_usec &&
+           now_usec - filter->last_usec <= SYNC_WINDOW_USEC &&
+           now_usec - filter->first_usec >= SYNC_WINDOW_USEC;
 }
 
-int64_t age_buffer_median(const AgeBuffer *ab) {
-    return compute_median(ab->buf, ab->count);
-}
-
-int age_buffer_full(const AgeBuffer *ab) {
-    return ab->count >= ab->capacity;
-}
-
-void age_buffer_clear(AgeBuffer *ab) {
-    ab->count = 0;
-    ab->write_idx = 0;
+int64_t sync_filter_median(const SyncFilter *filter, int64_t now_usec) {
+    int64_t values[SYNC_FILTER_SIZE];
+    int count = 0;
+    for (int i = 0; i < filter->count; i++) {
+        if (filter->times[i] >= now_usec - SYNC_WINDOW_USEC &&
+            filter->times[i] <= now_usec)
+            values[count++] = filter->values[i];
+    }
+    if (!count) return 0;
+    qsort(values, count, sizeof(values[0]), cmp_int64);
+    return values[count / 2];
 }

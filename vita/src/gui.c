@@ -1,5 +1,6 @@
 #include "gui.h"
 #include "config.h"
+#include "diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -241,8 +242,10 @@ static void draw_connect_screen(AppState *state) {
     }
 
     /* Debug hints */
+#if SNAPVITA_FILE_LOGGING
     draw_text(cx - 160, SCREEN_H - BOTTOM_BAR_H - 32, COL_DIM, 0.60f,
               "Debug log: ux0:data/snapcast/debug.log");
+#endif
 }
 
 /* --- Player screen --- */
@@ -581,7 +584,8 @@ static void draw_settings_screen(AppState *state, AudioContext *audio) {
 
         draw_text(lx, y + 14, COL_GRAY, 0.85f, "Srv buf:");
         char buf_str[32];
-        snprintf(buf_str, sizeof(buf_str), "%d ms", state->buffer_ms);
+        snprintf(buf_str, sizeof(buf_str), "%d ms (play %d ms)", state->buffer_ms,
+                 audio ? audio->buffer_ms : 0);
         draw_text(lx + 170, y + 14, COL_WHITE, 0.85f, buf_str);
         y += 30;
 
@@ -851,9 +855,7 @@ void gui_handle_input(AppState *state, NetContext *net, AudioContext *audio) {
                 state->conn_state = CONN_DISCONNECTED;
                 state->auto_reconnect = 0;
                 state->reconnect_attempts = 0;
-                audio_stop(audio);
-                net_stream_disconnect(net);
-                net_control_disconnect(net);
+                /* Main loop joins the stream thread before stopping audio. */
             } else if (state->conn_state != CONN_CONNECTING) {
                 state->conn_state = CONN_CONNECTING;
             }
